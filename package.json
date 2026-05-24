@@ -1,0 +1,19 @@
+{
+  "name": "robin-markets-integration",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "deposit": "tsx deposit.ts",
+    "withdraw": "tsx withdraw.ts"
+  },
+  "dependencies": {
+    "@safe-global/protocol-kit": "5.2.27",
+    "dotenv": "16.6.1",
+    "viem": "2.50.4"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
+  }
+}
