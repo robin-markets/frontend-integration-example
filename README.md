@@ -1,14 +1,16 @@
-# Robin Markets — Staking Vault Integration Guide
+# Robin Markets - Staking Vault Integration Guide
 
 This document describes everything a third-party frontend needs to know in order to deposit and withdraw Polymarket conditional tokens (CT) into the Robin Staking Vault.
 
 Network: **Polygon (chainId 137)**. All token amounts and prices use **6 decimals**.
 
+> **Disclaimer.** This guide and the accompanying code in `[src/](./src)` are provided **as is**, without warranty of any kind, express or implied, including but not limited to fitness for a particular purpose, accuracy, or non-infringement. Robin Markets makes no guarantee that the code is correct, complete, secure, or up to date, and accepts no liability for any loss of funds, opportunity, or data arising from its use. The examples are intentionally minimal - they are a starting point for your own integration, not a production-ready library. Before shipping anything that touches user funds: audit the code, test against a fork, and verify contract addresses and API endpoints against the current deployment.
+
 ---
 
 ## 1. The big picture
 
-A Polymarket user holds ERC-1155 conditional tokens inside their **Polymarket Gnosis Safe proxy wallet**. They never sign transactions from the proxy directly — they sign with their EOA, and the Safe executes the call via `execTransaction` using a pre-validated signature owned by the EOA.
+A Polymarket user holds ERC-1155 conditional tokens inside their **Polymarket Gnosis Safe proxy wallet**. They never sign transactions from the proxy directly - they sign with their EOA, and the Safe executes the call via `execTransaction` using a pre-validated signature owned by the EOA.
 
 Polymarket proxy wallets (MagicLink users; signed up via e-mail) are not currently supported because they need to export their private key in order to use Robin.
 
@@ -19,15 +21,15 @@ transactions:
 
 **Deposit**
 
-1. `RobinTwapOracle.submitTwap(...)` — refreshes TWAP before deposit
-2. `ConditionalTokens.setApprovalForAll(STAKING_VAULT, true)` — let the vault pull CT
-3. `RobinStakingVault.batchDeposit(...)` — pair YES/NO, merge to USDC, supply to Yearn, mint shares
-4. `ConditionalTokens.setApprovalForAll(STAKING_VAULT, false)` — revoke
+1. `RobinTwapOracle.submitTwap(...)` - refreshes TWAP before deposit
+2. `ConditionalTokens.setApprovalForAll(STAKING_VAULT, true)` - let the vault pull CT
+3. `RobinStakingVault.batchDeposit(...)` - pair YES/NO, merge to USDC, supply to Yearn, mint shares
+4. `ConditionalTokens.setApprovalForAll(STAKING_VAULT, false)` - revoke
 
 **Withdraw**
 
 1. `RobinTwapOracle.submitTwap(...)`
-2. `RobinStakingVault.batchWithdraw(...)` — burns shares, splits USDC back to YES+NO if needed, returns to user
+2. `RobinStakingVault.batchWithdraw(...)` - burns shares, splits USDC back to YES+NO if needed, returns to user
 
 All four/two calls run atomically inside a single `Safe.execTransaction` via MultiSend.
 
@@ -35,7 +37,7 @@ All four/two calls run atomically inside a single `Safe.execTransaction` via Mul
 > `conditionIds` array must be **sorted strictly ascending with no duplicates**. The vault
 > uses this invariant to detect duplicate-market attacks in O(n) and reverts with
 > `UnsortedConditionIds` otherwise. All other batch arrays must use the same permutation.
-> See section 8 and the `sortBatchByConditionId` helper in `[shared.ts](./shared.ts)`.
+> See section 8 and the `sortBatchByConditionId` helper in `[shared.ts](./src/shared.ts)`.
 
 ---
 
@@ -135,7 +137,7 @@ Content-Type: application/json
 
 The response has one of two shapes:
 
-**Mode A — oracle already submitted on-chain itself (you don't need to do anything)**
+**Mode A - oracle already submitted on-chain itself (you don't need to do anything)**
 
 ```jsonc
 { "txHash": "0x...", "initialized": 0, "skipped": false }
@@ -143,7 +145,7 @@ The response has one of two shapes:
 
 If `txHash` is present, the markets are already updated. Skip the `submitTwap` call in your batch.
 
-**Mode B — signed payload, you must submit it**
+**Mode B - signed payload, you must submit it**
 
 ```jsonc
 {
@@ -168,14 +170,14 @@ The struct is `BatchTwapData { TwapData[] markets; bytes signature; }`.
 
 **Short-circuit**: if every returned market has `required === false && marketEndedAt === "0"`, you can skip the `submitTwap` call entirely (it would be a no-op).
 
-> **Coming soon — TEE-attested TWAP oracle.** The TWAP signer currently runs as a regular server-side process. We're migrating it to run inside an [Oasis ROFL](https://docs.oasis.io/build/rofl/) TEE (Trusted Execution Environment), at which point the signing key lives only inside the enclave and the signed payload comes with a remote-attestation proof binding it to a specific ROFL app id. The HTTP request/response shape will stay the same, so no integration changes are required — but you'll be able to verify that the signature you got was produced by code whose source has been published and attested. We'll publish the ROFL app id and a verification  
+> **Coming soon - TEE-attested TWAP oracle.** The TWAP signer currently runs as a regular server-side process. We're migrating it to run inside an [Oasis ROFL](https://docs.oasis.io/build/rofl/) TEE (Trusted Execution Environment), at which point the signing key lives only inside the enclave and the signed payload comes with a remote-attestation proof binding it to a specific ROFL app id. The HTTP request/response shape will stay the same, so no integration changes are required - but you'll be able to verify that the signature you got was produced by code whose source has been published and attested. We'll publish the ROFL app id and a verification  
 > snippet here once the migration ships.
 
 ---
 
 ## 7. Building the Safe batch
 
-The proxy is a Gnosis Safe (L2). The EOA is the only owner with threshold 1, so signatures can be "pre-validated" — no signing required, just include the owner address padded to 32 bytes + `0x01`.
+The proxy is a Gnosis Safe (L2). The EOA is the only owner with threshold 1, so signatures can be "pre-validated" - no signing required, just include the owner address padded to 32 bytes + `0x01`.
 
 The code uses `**@safe-global/protocol-kit` which abstracts this away.
 
@@ -215,8 +217,8 @@ Rules:
 
 - **Sorted batch (REQUIRED).** `conditionIds` must be sorted strictly ascending (by `bytes32`
   numeric value). Duplicates revert with `UnsortedConditionIds`. The other arrays must use the
-  same permutation. This is how the vault detects duplicate-market attacks in O(n) — sort
-  off-chain and you're safe. See `sortBatchByConditionId` in `[shared.ts](./shared.ts)`.
+  same permutation. This is how the vault detects duplicate-market attacks in O(n) - sort
+  off-chain and you're safe. See `sortBatchByConditionId` in `[shared.ts](./src/shared.ts)`.
 - If your selection covers both YES and NO of the same `conditionId`, **merge them into one row**
   (one `yesAmounts[i]`, one `noAmounts[i]`) before sorting. Two rows with the same conditionId
   will revert.
@@ -234,7 +236,7 @@ function batchWithdraw(
     bytes32[] conditionIds,  // MUST be sorted strictly ascending, no duplicates
     uint256[] yesShares,     // ERC-1155 shares to burn, 6 decimals (aligned)
     uint256[] noShares,      // (aligned)
-    address yieldRecipient,  // who receives the USDC yield — usually the proxy itself
+    address yieldRecipient,  // who receives the USDC yield - usually the proxy itself
     uint256 nonZeroLength,
     uint256 referralCode     // 0 if none
 )
@@ -254,7 +256,7 @@ const portfolio = await publicClient.readContract({
 // Returns [yesShares[], noShares[], yesAssets[], noAssets[], yesYield[], noYield[]]
 ```
 
-For the `twapPricesYes` argument you can pass the constant `IGNORE_TWAP_PRICE = 1_000_001n`(PRICE_SCALE + 1) if you don't care about the yield breakdown — the shares/assets fields are still correct.
+For the `twapPricesYes` argument you can pass the constant `IGNORE_TWAP_PRICE = 1_000_001n`(PRICE_SCALE + 1) if you don't care about the yield breakdown - the shares/assets fields are still correct.
 
 ---
 
@@ -263,13 +265,13 @@ For the `twapPricesYes` argument you can pass the constant `IGNORE_TWAP_PRICE = 
 Some changes are coming to the vault. The example code already has them prepared as
 commented-out blocks so you can flip them on when the upgrade ships:
 
-`**batchDeposit` — gains `bytes32[] questionIds` between `conditionIds` and `yesAmounts`. Used only for auto-initialising new markets; for already-initialised markets the value is ignored but the array must still be aligned and the same length as `conditionIds`. Source the value from Polymarket Gamma's `questionID` field (helper: `fetchQuestionIds` in
-`[shared.ts](./shared.ts)`).
+`**batchDeposit` - gains `bytes32[] questionIds` between `conditionIds` and `yesAmounts`. Used only for auto-initialising new markets; for already-initialised markets the value is ignored but the array must still be aligned and the same length as `conditionIds`. Source the value from Polymarket Gamma's `questionID` field (helper: `fetchQuestionIds` in
+`[shared.ts](./src/shared.ts)`).
 
 ```solidity
 function batchDeposit(
     bytes32[] conditionIds,
-    bytes32[] questionIds,   // NEW — aligned with conditionIds
+    bytes32[] questionIds,   // NEW - aligned with conditionIds
     uint256[] yesAmounts,
     uint256[] noAmounts,
     uint256 nonZeroLength,
@@ -277,7 +279,7 @@ function batchDeposit(
 )
 ```
 
-`**batchWithdraw**` — gains a trailing `bool wrapYieldToPolyUsd`. When `true`, USDC.e yield is wrapped to PolyUSD via Polymarket's `CollateralOnramp` before being transferred to `yieldRecipient`.
+`**batchWithdraw**` - gains a trailing `bool wrapYieldToPolyUsd`. When `true`, USDC.e yield is wrapped to PolyUSD via Polymarket's `CollateralOnramp` before being transferred to `yieldRecipient`.
 
 ```solidity
 function batchWithdraw(
