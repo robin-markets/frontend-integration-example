@@ -41,7 +41,6 @@ All four/two calls run atomically inside a single `Safe.execTransaction` via Mul
 
 ## 2. Contract addresses (Polygon mainnet)
 
-
 | Name                 | Address                                                       |
 | -------------------- | ------------------------------------------------------------- |
 | `SAFE_PROXY_FACTORY` | `0xaacFeEa03eb1561C4e67d661e40682Bd20E3541b`                  |
@@ -51,7 +50,6 @@ All four/two calls run atomically inside a single `Safe.execTransaction` via Mul
 | `CONDITIONAL_TOKENS` | `0x4D97DCd97eC945f40cF65F87097ACe5EA0476045` (Polymarket CTF) |
 | `USDCE`              | `0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174`                  |
 | `YEARN_USDCE_VAULT`  | `0x335Bc8366545FaA446e0c1f639617aC40061f2EF`                  |
-
 
 ---
 
@@ -216,16 +214,16 @@ function batchDeposit(
 Rules:
 
 - **Sorted batch (REQUIRED).** `conditionIds` must be sorted strictly ascending (by `bytes32`
-numeric value). Duplicates revert with `UnsortedConditionIds`. The other arrays must use the
-same permutation. This is how the vault detects duplicate-market attacks in O(n) — sort
-off-chain and you're safe. See `sortBatchByConditionId` in `[shared.ts](./shared.ts)`.
+  numeric value). Duplicates revert with `UnsortedConditionIds`. The other arrays must use the
+  same permutation. This is how the vault detects duplicate-market attacks in O(n) — sort
+  off-chain and you're safe. See `sortBatchByConditionId` in `[shared.ts](./shared.ts)`.
 - If your selection covers both YES and NO of the same `conditionId`, **merge them into one row**
-(one `yesAmounts[i]`, one `noAmounts[i]`) before sorting. Two rows with the same conditionId
-will revert.
+  (one `yesAmounts[i]`, one `noAmounts[i]`) before sorting. Two rows with the same conditionId
+  will revert.
 - For every `i`, at least one of `yesAmounts[i] / noAmounts[i]` must be non-zero.
 - `nonZeroLength` must equal the actual count, otherwise the vault reverts.
 - The vault transfers tokens from the Safe (msg.sender), which is why you must approve the vault
-on `ConditionalTokens` first.
+  on `ConditionalTokens` first.
 
 ---
 
@@ -293,15 +291,14 @@ function batchWithdraw(
 )
 ```
 
-**Push-deposit flow (new, recommended after the upgrade)**. The vault then uses `onERC1155BatchReceived` for deposits,  so the user can push CT tokens to the vault in a single CTF transfer and the vault runs the full deposit pipeline atomically inside the hook. This replaces the 3-call `approve / batchDeposit / revoke` dance with a single `safeBatchTransferFrom` and removes the need for any standing approval on `ConditionalTokens`. This new flow will enable deposits from the new Plymarket "Deposit Wallets". A code example and better explanation will follow after the upgrade.
+**Push-deposit flow (new, recommended after the upgrade)**. The vault then uses `onERC1155BatchReceived` for deposits, so the user can push CT tokens to the vault in a single CTF transfer and the vault runs the full deposit pipeline atomically inside the hook. This replaces the 3-call `approve / batchDeposit / revoke` dance with a single `safeBatchTransferFrom` and removes the need for any standing approval on `ConditionalTokens`. This new flow will enable deposits from the new Plymarket "Deposit Wallets". A code example and better explanation will follow after the upgrade.
 
 ---
 
-## 12. Commands
+## 11. Commands
 
 ```bash
 npm install
 npm run deposit
 npm run withdraw
 ```
-
