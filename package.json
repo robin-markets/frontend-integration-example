@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "deposit": "tsx src/deposit.ts",
+    "deposit:push": "tsx src/deposit-push.ts",
     "withdraw": "tsx src/withdraw.ts"
   },
   "dependencies": {

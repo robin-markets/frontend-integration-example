@@ -49,6 +49,14 @@ export type DepositRow = {
   noAmount: bigint;
 };
 
+export type PushDepositRow = {
+  conditionId: `0x${string}`;
+  yesAmount: bigint;
+  noAmount: bigint;
+  yesPositionId: bigint;
+  noPositionId: bigint;
+};
+
 export type WithdrawRow = {
   conditionId: `0x${string}`;
   yesShares: bigint;

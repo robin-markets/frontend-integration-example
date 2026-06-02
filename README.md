@@ -14,7 +14,7 @@ A Polymarket user holds ERC-1155 conditional tokens inside their **Polymarket Gn
 
 Polymarket proxy wallets (MagicLink users; signed up via e-mail) are not currently supported because they need to export their private key in order to use Robin.
 
-The new Polymarket DepositWallets (used for every fresh Polymarket account) integrate via the push-deposit flow (section 10) instead of the approve/`batchDeposit` path below.
+The new Polymarket DepositWallets (used for every fresh Polymarket account) integrate via the push-deposit flow (section 10) instead of the approve/`batchDeposit` path below. All calls for DepositWallets go through the Polymarket relayer. Please refer to the Polymarket documentation for guidance on how to integrate deposit wallets from their side.
 
 A single Robin deposit/withdraw is therefore a **Safe batch** (multi-send) that contains 2–4
 transactions:
@@ -23,7 +23,7 @@ transactions:
 
 1. `RobinTwapOracle.submitTwap(...)` - refreshes TWAP before deposit
 2. `ConditionalTokens.setApprovalForAll(STAKING_VAULT, true)` - let the vault pull CT
-3. `RobinStakingVault.batchDeposit(...)` - pair YES/NO, merge to USDC, supply to Yearn, mint shares
+3. `RobinStakingVault.batchDeposit(...)` - pair YES/NO, merge to USDC, supply to yield strategy, mint shares
 4. `ConditionalTokens.setApprovalForAll(STAKING_VAULT, false)` - revoke
 
 **Withdraw**
@@ -51,7 +51,6 @@ All four/two calls run atomically inside a single `Safe.execTransaction` via Mul
 | `ROBIN_LENS`         | `0xDbB59819C5a4d28374a162e375Ce4595c8650dDC`                  |
 | `CONDITIONAL_TOKENS` | `0x4D97DCd97eC945f40cF65F87097ACe5EA0476045` (Polymarket CTF) |
 | `USDCE`              | `0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174`                  |
-| `YEARN_USDCE_VAULT`  | `0x335Bc8366545FaA446e0c1f639617aC40061f2EF`                  |
 
 ---
 
@@ -290,16 +289,98 @@ are the current **loss-adjusted outcome-token amount** those shares are worth.
 
 ## 10. Push-deposit flow (alternative deposit path)
 
-Besides the `approve / batchDeposit / revoke` batch shown above, the vault accepts deposits through
-its `onERC1155BatchReceived` hook. The user pushes the CT tokens to the vault in a single CTF
-`safeBatchTransferFrom`, encoding the deposit payload (`conditionIds`, `questionIds`, `yesAmounts`,
-`noAmounts`, `nonZeroLength`, `referralCode`) into the transfer's `data` argument; the vault runs the
-full deposit pipeline atomically inside the hook. This collapses the 3-call dance into a single
-transfer and removes the need for any standing approval on `ConditionalTokens`. It's the only mechanism
-that lets the new Polymarket "Deposit Wallets" stake because all calls for these wallets go through the Polymarket relayer,
-which blocks approve calls to the CTF contract. The `(ids, values)` you transfer must match
-exactly what the payload implies - the YES then NO position id of each market, in the same ascending
-`conditionId` order, skipping zero-amount sides - or the vault reverts `PushDepositMismatch`.
+Instead of the `approve → batchDeposit → revoke` batch shown above, you can deposit in a single CTF
+transfer: the user pushes the CT tokens straight to the vault and the vault's
+`onERC1155BatchReceived` hook decodes the payload and runs the full deposit pipeline atomically.
+See `[deposit-push.ts](./src/deposit-push.ts)` for a runnable version.
+
+```
+safe.execTransaction(
+    multisend([
+        RobinTwapOracle.submitTwap(twapPayload),
+        ConditionalTokens.safeBatchTransferFrom(
+            safe, vault, ids, values, depositData,
+        ),
+    ])
+)
+```
+
+This collapses the 3-call dance into a single transfer and needs no standing approval on
+`ConditionalTokens`. It's the only mechanism that lets the new Polymarket "Deposit Wallets" stake:
+all calls for those wallets go through the Polymarket relayer, which blocks `approve` calls to the
+CTF. The vault's hook runs the full pipeline (pair YES/NO, merge to USDC, mint shares, supply to
+yield strategy) inside the same call; if anything reverts, the whole CTF transfer is rolled back, so tokens
+never get stuck.
+
+**Building `depositData`**
+
+It is the ABI encoding of the same arguments `batchDeposit` would take:
+
+```solidity
+abi.encode(
+    bytes32[] conditionIds,    // sorted strictly ascending
+    bytes32[] questionIds,     // aligned with conditionIds, from Polymarket Gamma
+    uint256[] yesAmounts,      // aligned, 6-decimal
+    uint256[] noAmounts,       // aligned, 6-decimal
+    uint256 nonZeroLength,
+    uint256 referralCode
+)
+```
+
+**Building `ids` and `values`**
+
+The vault re-derives these locally from `(conditionIds, yes/noAmounts, cached positionIds)` and
+compares `keccak256(abi.encode(ids, values))` against what you transferred. Build them the same
+way it does, or you'll hit `PushDepositMismatch`:
+
+- Iterate `sortedRows` in ascending conditionId order.
+- For each row: if `yesAmount > 0`, push the market's YES positionId then yesAmount. Then if
+  `noAmount > 0`, push the NO positionId then noAmount.
+- Skip zero sides entirely (they must NOT appear in `ids`/`values`).
+
+The YES/NO position ids are the on-chain ERC-1155 token ids. Polymarket's `/positions` data API
+returns this directly as the `asset` field (uint256 as decimal string).
+
+**Wire encoding helper (viem)**
+
+```ts
+import { encodeAbiParameters } from "viem";
+
+const depositData = encodeAbiParameters(
+  [
+    { type: "bytes32[]" },
+    { type: "bytes32[]" },
+    { type: "uint256[]" },
+    { type: "uint256[]" },
+    { type: "uint256" },
+    { type: "uint256" },
+  ],
+  [
+    conditionIds,
+    questionIds,
+    yesAmounts,
+    noAmounts,
+    nonZeroLength,
+    referralCode,
+  ],
+);
+```
+
+Then call:
+
+```ts
+ConditionalTokens.safeBatchTransferFrom(safe, vault, ids, values, depositData);
+```
+
+**Failure modes specific to push-deposit**
+
+- `PushDepositMismatch` — your `(ids, values)` doesn't equal what the declared payload implies.
+  Most common causes: wrong YES/NO ordering, included a zero-amount side, mixed up
+  YES/NO positionIds for a neg-risk market.
+- `UnsolicitedTransfer` — the inbound transfer isn't from the CTF (i.e. you're trying to push
+  some other ERC-1155 to the vault), or your `data` didn't decode as the deposit payload.
+- Any other deposit revert (`UnsortedConditionIds`, `ZeroAmount`, `LengthMismatch`, …) — same as
+  the pull-deposit path; the CTF transfer is rolled back.
 
 ---
 
@@ -308,5 +389,6 @@ exactly what the payload implies - the YES then NO position id of each market, i
 ```bash
 npm install
 npm run deposit
+npm run deposit:push
 npm run withdraw
 ```

@@ -142,7 +142,7 @@ async function main() {
 
   // 6. Execute via Safe.
   const safe = await Safe.init({
-    provider: process.env.POLYGON_RPC_URL || "https://polygon-rpc.com",
+    provider: process.env.POLYGON_RPC_URL || "https://polygon.drpc.org",
     signer: process.env.EOA_PRIVATE_KEY,
     safeAddress: proxy,
   });
