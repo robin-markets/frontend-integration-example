@@ -17,12 +17,12 @@ import {
   account,
   assertProxyDeployed,
   computeProxyAddress,
+  fetchQuestionIds,
   fetchTwap,
   fetchUserPositions,
   pickManyFromList,
   promptAmount6dec,
   publicClient,
-  // After the upcoming contract upgrade, also import `fetchQuestionIds` from "./shared.js".
   sortBatchByConditionId,
 } from "./shared.js";
 import {
@@ -106,18 +106,10 @@ async function main() {
   );
   const referralCode = 0n;
 
-  // ─── UPCOMING UPGRADE (feature/contracts-update-1) ─────────────────────────
-  // After upgrade, batchDeposit requires `bytes32[] questionIds` aligned with `conditionIds`
-  // (used only when a market needs auto-init). Fetch from Polymarket Gamma and apply the same
-  // sort permutation. Uncomment when the upgrade ships:
-  //
-  // const qMap = await fetchQuestionIds(conditionIds);
-  // const questionIds = conditionIds.map((cid) => {
-  //     const q = qMap[cid];
-  //     if (!q) throw new Error(`No questionId for ${cid}`);
-  //     return q;
-  // });
-  // ───────────────────────────────────────────────────────────────────────────
+  // batchDeposit requires `bytes32[] questionIds` aligned with `conditionIds` (used only when a
+  // market needs auto-initialising; ignored for already-initialised markets, but the array must
+  // still be aligned and the same length). Sourced from Polymarket Gamma's `questionID` field.
+  const questionIds = await fetchQuestionIds(conditionIds);
 
   // 4. Fetch TWAP. May return null if not needed.
   const twap = await fetchTwap(conditionIds);
@@ -153,10 +145,14 @@ async function main() {
     data: encodeFunctionData({
       abi: stakingVaultAbi,
       functionName: "batchDeposit",
-      // ─── UPCOMING UPGRADE ──────────────────────────────────────────────────
-      // args: [conditionIds, questionIds, yesAmounts, noAmounts, nonZeroLength, referralCode],
-      // ───────────────────────────────────────────────────────────────────────
-      args: [conditionIds, yesAmounts, noAmounts, nonZeroLength, referralCode],
+      args: [
+        conditionIds,
+        questionIds,
+        yesAmounts,
+        noAmounts,
+        nonZeroLength,
+        referralCode,
+      ],
     }),
   });
 

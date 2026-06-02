@@ -100,14 +100,9 @@ async function main() {
   );
   const referralCode = 0n;
   const yieldRecipient = proxy;
-
-  // ─── UPCOMING UPGRADE (feature/contracts-update-1) ─────────────────────────
-  // After upgrade, `batchWithdraw` gains a trailing `bool wrapYieldToPolyUsd`. Set to `true` to
-  // receive yield as PolyUSD (wrapped via Polymarket's CollateralOnramp), or `false` to keep
-  // USDC.e behaviour. Uncomment when the upgrade ships:
-  //
-  // const wrapYieldToPolyUsd = false;
-  // ───────────────────────────────────────────────────────────────────────────
+  // Set to `true` to receive yield as PolyUSD (wrapped via Polymarket's CollateralOnramp), or
+  // `false` to keep USDC.e.
+  const wrapYieldToPolyUsd = false;
 
   // 4. TWAP.
   const twap = await fetchTwap(conditionIds);
@@ -133,17 +128,6 @@ async function main() {
     data: encodeFunctionData({
       abi: stakingVaultAbi,
       functionName: "batchWithdraw",
-      // ─── UPCOMING UPGRADE ──────────────────────────────────────────────────
-      // args: [
-      //     conditionIds,
-      //     yesArr,
-      //     noArr,
-      //     yieldRecipient,
-      //     nonZeroLength,
-      //     referralCode,
-      //     wrapYieldToPolyUsd,
-      // ],
-      // ───────────────────────────────────────────────────────────────────────
       args: [
         conditionIds,
         yesArr,
@@ -151,6 +135,7 @@ async function main() {
         yieldRecipient,
         nonZeroLength,
         referralCode,
+        wrapYieldToPolyUsd,
       ],
     }),
   });

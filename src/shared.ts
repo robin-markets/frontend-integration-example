@@ -27,7 +27,7 @@ export const ADDR = {
   SAFE_PROXY_FACTORY: "0xaacFeEa03eb1561C4e67d661e40682Bd20E3541b" as Address,
   STAKING_VAULT: "0xcb7444981296D08dA7161B75378e3773DbF5D806" as Address,
   TWAP_ORACLE: "0xf08a02deeB4C7A09fAc8e8C6f8508D724612796f" as Address,
-  ROBIN_LENS: "0x6131F4111B848Ca7aE2df06fDaF1EC9BCfb18032" as Address,
+  ROBIN_LENS: "0xDbB59819C5a4d28374a162e375Ce4595c8650dDC" as Address,
   CONDITIONAL_TOKENS: "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045" as Address,
 };
 
@@ -38,7 +38,6 @@ export const POLYMARKET_DATA = "https://data-api.polymarket.com";
 // All token amounts and prices in the Robin vault are 6-decimal fixed-point.
 export const UNDERLYING_DECIMALS = 6;
 export const PRICE_SCALE = 10n ** BigInt(UNDERLYING_DECIMALS);
-export const IGNORE_TWAP_PRICE = PRICE_SCALE + 1n;
 
 // ============ viem clients ============
 
@@ -105,11 +104,12 @@ export async function fetchUserPositions(
   return Array.from(byCid.values());
 }
 
-// Polymarket questionId — required by `batchDeposit` after the upcoming contract upgrade.
+// Polymarket questionIds for `batchDeposit`, returned aligned 1:1 with `conditionIds` (used for
+// auto-init). Throws if Polymarket doesn't return a questionId for any requested market.
 export async function fetchQuestionIds(
   conditionIds: `0x${string}`[],
-): Promise<Record<string, `0x${string}`>> {
-  if (conditionIds.length === 0) return {};
+): Promise<`0x${string}`[]> {
+  if (conditionIds.length === 0) return [];
   const qs = conditionIds
     .map((id) => `condition_ids=${encodeURIComponent(id)}`)
     .join("&");
@@ -120,9 +120,12 @@ export async function fetchQuestionIds(
   const data = (await res.json()) as {
     markets: Array<{ conditionId: `0x${string}`; questionID: `0x${string}` }>;
   };
-  return Object.fromEntries(
-    data.markets.map((m) => [m.conditionId, m.questionID]),
-  );
+  const byCid = new Map(data.markets.map((m) => [m.conditionId, m.questionID]));
+  return conditionIds.map((cid) => {
+    const q = byCid.get(cid);
+    if (!q) throw new Error(`No questionId for ${cid}`);
+    return q;
+  });
 }
 
 // ============ Misc helpers ============
@@ -147,8 +150,8 @@ export async function assertProxyDeployed(proxy: Address): Promise<void> {
 
 // ============ Batch ordering ============
 //
-// The Robin Staking Vault REQUIRES batch arrays (`conditionIds`, `yesAmounts`/`yesShares`,
-// `noAmounts`/`noShares`, and — after the upcoming upgrade — `questionIds`) to be ordered by
+// The Robin Staking Vault REQUIRES batch arrays (`conditionIds`, `questionIds`,
+// `yesAmounts`/`yesShares`, `noAmounts`/`noShares`) to be ordered by
 // `conditionId` strictly ascending, with no duplicates. The contract uses this invariant to
 // detect duplicate markets in O(n): if two adjacent ids are equal or out of order, it reverts
 // with `UnsortedConditionIds`.

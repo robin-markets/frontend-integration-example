@@ -14,7 +14,7 @@ A Polymarket user holds ERC-1155 conditional tokens inside their **Polymarket Gn
 
 Polymarket proxy wallets (MagicLink users; signed up via e-mail) are not currently supported because they need to export their private key in order to use Robin.
 
-The new Polymarket DepositWallets (used for every fresh Polymarket account) will be supported soon via a special Push-Deposit flow.
+The new Polymarket DepositWallets (used for every fresh Polymarket account) integrate via the push-deposit flow (section 10) instead of the approve/`batchDeposit` path below.
 
 A single Robin deposit/withdraw is therefore a **Safe batch** (multi-send) that contains 2–4
 transactions:
@@ -48,7 +48,7 @@ All four/two calls run atomically inside a single `Safe.execTransaction` via Mul
 | `SAFE_PROXY_FACTORY` | `0xaacFeEa03eb1561C4e67d661e40682Bd20E3541b`                  |
 | `STAKING_VAULT`      | `0xcb7444981296D08dA7161B75378e3773DbF5D806` (proxy)          |
 | `TWAP_ORACLE`        | `0xf08a02deeB4C7A09fAc8e8C6f8508D724612796f` (proxy)          |
-| `ROBIN_LENS`         | `0x6131F4111B848Ca7aE2df06fDaF1EC9BCfb18032`                  |
+| `ROBIN_LENS`         | `0xDbB59819C5a4d28374a162e375Ce4595c8650dDC`                  |
 | `CONDITIONAL_TOKENS` | `0x4D97DCd97eC945f40cF65F87097ACe5EA0476045` (Polymarket CTF) |
 | `USDCE`              | `0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174`                  |
 | `YEARN_USDCE_VAULT`  | `0x335Bc8366545FaA446e0c1f639617aC40061f2EF`                  |
@@ -120,6 +120,11 @@ GET https://gamma-api.polymarket.com/markets/keyset?condition_ids=0x...&conditio
 
 Each market returned has `outcomePrices` like `"[\"0.42\",\"0.58\"]"`. Index 0 is YES, index 1 is NO.
 Convert into a `bigint` using the same 6-decimal scale.
+
+> **CORS / calling from the browser.** The Gamma API is a third-party Polymarket service and does
+> not guarantee CORS headers for your origin (the same applies to the questionId lookup in section 8,
+> which also hits Gamma, and to the data API in section 4). If a direct browser request is blocked,
+> proxy these calls through your own backend. This example runs server-side, so it isn't affected.
 
 ---
 
@@ -206,6 +211,7 @@ Under the hood `protocol-kit` deploys/uses the MultiSend contract and wraps ever
 ```solidity
 function batchDeposit(
     bytes32[] conditionIds,  // MUST be sorted strictly ascending, no duplicates
+    bytes32[] questionIds,   // Polymarket questionId per market (aligned with conditionIds)
     uint256[] yesAmounts,    // CT tokens, 6 decimals (aligned with conditionIds)
     uint256[] noAmounts,     // CT tokens, 6 decimals (aligned with conditionIds)
     uint256 nonZeroLength,   // count of non-zero amounts across both arrays (used for internal array sizing)
@@ -219,6 +225,11 @@ Rules:
   numeric value). Duplicates revert with `UnsortedConditionIds`. The other arrays must use the
   same permutation. This is how the vault detects duplicate-market attacks in O(n) - sort
   off-chain and you're safe. See `sortBatchByConditionId` in `[shared.ts](./src/shared.ts)`.
+- **`questionIds`** must be aligned with `conditionIds`. It's only used to auto-initialise a market
+  on its first ever deposit (the vault verifies `conditionId == keccak256(oracle, questionId, 2)`);
+  for already-initialised markets the value is ignored, but the array must still be present, aligned,
+  and the same length. Source it from Polymarket Gamma's `questionID` field - see `fetchQuestionIds`
+  in `[shared.ts](./src/shared.ts)`.
 - If your selection covers both YES and NO of the same `conditionId`, **merge them into one row**
   (one `yesAmounts[i]`, one `noAmounts[i]`) before sorting. Two rows with the same conditionId
   will revert.
@@ -238,62 +249,57 @@ function batchWithdraw(
     uint256[] noShares,      // (aligned)
     address yieldRecipient,  // who receives the USDC yield - usually the proxy itself
     uint256 nonZeroLength,
-    uint256 referralCode     // 0 if none
+    uint256 referralCode,    // 0 if none
+    bool wrapYieldToPolyUsd  // true = wrap USDC.e yield to PolyUSD via Polymarket's CollateralOnramp
 )
 ```
 
 Same sorting rule as `batchDeposit`. Each `conditionId` appears at most once in the batch.
 
-You need to know **how many shares the user owns per market and side**. Use the lens contract:
+Set `wrapYieldToPolyUsd` to `false` to receive yield as USDC.e (the default), or `true` to have it
+wrapped to PolyUSD before transfer to `yieldRecipient`.
 
-```ts
-const portfolio = await publicClient.readContract({
-  address: ROBIN_LENS,
-  abi: robinLensAbi,
-  functionName: "batchGetUserPortfolio",
-  args: [proxyAddress, conditionIds, twapPricesYes],
-});
-// Returns [yesShares[], noShares[], yesAssets[], noAssets[], yesYield[], noYield[]]
+You need to know **how many shares the user owns per market and side**. The example reads this from
+Robin's API (`fetchDepositedPositions` in `[shared.ts](./src/shared.ts)`):
+
+```
+GET https://app.robin.markets/api/positions?address={proxyAddress}&category=active&page=1
 ```
 
-For the `twapPricesYes` argument you can pass the constant `IGNORE_TWAP_PRICE = 1_000_001n`(PRICE_SCALE + 1) if you don't care about the yield breakdown - the shares/assets fields are still correct.
+It returns the user's currently-deposited positions, paginated, each with `yesShares` / `noShares`
+(6-decimal strings - the ERC-1155 share balances you burn) and a `positionTvl` (6-decimal USD).
+Walk `page=1,2,…` until you've collected `total` rows.
+
+**Alternative - read on-chain via the lens.** If you'd rather not depend on Robin's API, the
+`RobinLens` contract returns the same share balances plus their current value in a single call:
+
+```ts
+const [yesShares, noShares, yesAssets, noAssets] =
+  await publicClient.readContract({
+    address: ROBIN_LENS,
+    abi: robinLensAbi,
+    functionName: "batchGetUserSharesAndAssets",
+    args: [proxyAddress, conditionIds],
+  });
+```
+
+`yesShares` / `noShares` are the share balances to pass to `batchWithdraw`; `yesAssets` / `noAssets`
+are the current **loss-adjusted outcome-token amount** those shares are worth.
 
 ---
 
-## 10. Upcoming contract upgrade
+## 10. Push-deposit flow (alternative deposit path)
 
-Some changes are coming to the vault. The example code already has them prepared as
-commented-out blocks so you can flip them on when the upgrade ships:
-
-`**batchDeposit` - gains `bytes32[] questionIds` between `conditionIds` and `yesAmounts`. Used only for auto-initialising new markets; for already-initialised markets the value is ignored but the array must still be aligned and the same length as `conditionIds`. Source the value from Polymarket Gamma's `questionID` field (helper: `fetchQuestionIds` in
-`[shared.ts](./src/shared.ts)`).
-
-```solidity
-function batchDeposit(
-    bytes32[] conditionIds,
-    bytes32[] questionIds,   // NEW - aligned with conditionIds
-    uint256[] yesAmounts,
-    uint256[] noAmounts,
-    uint256 nonZeroLength,
-    uint256 referralCode
-)
-```
-
-`**batchWithdraw**` - gains a trailing `bool wrapYieldToPolyUsd`. When `true`, USDC.e yield is wrapped to PolyUSD via Polymarket's `CollateralOnramp` before being transferred to `yieldRecipient`.
-
-```solidity
-function batchWithdraw(
-    bytes32[] conditionIds,
-    uint256[] yesShares,
-    uint256[] noShares,
-    address yieldRecipient,
-    uint256 nonZeroLength,
-    uint256 referralCode,
-    bool wrapYieldToPolyUsd  // NEW
-)
-```
-
-**Push-deposit flow (new, recommended after the upgrade)**. The vault then uses `onERC1155BatchReceived` for deposits, so the user can push CT tokens to the vault in a single CTF transfer and the vault runs the full deposit pipeline atomically inside the hook. This replaces the 3-call `approve / batchDeposit / revoke` dance with a single `safeBatchTransferFrom` and removes the need for any standing approval on `ConditionalTokens`. This new flow will enable deposits from the new Plymarket "Deposit Wallets". A code example and better explanation will follow after the upgrade.
+Besides the `approve / batchDeposit / revoke` batch shown above, the vault accepts deposits through
+its `onERC1155BatchReceived` hook. The user pushes the CT tokens to the vault in a single CTF
+`safeBatchTransferFrom`, encoding the deposit payload (`conditionIds`, `questionIds`, `yesAmounts`,
+`noAmounts`, `nonZeroLength`, `referralCode`) into the transfer's `data` argument; the vault runs the
+full deposit pipeline atomically inside the hook. This collapses the 3-call dance into a single
+transfer and removes the need for any standing approval on `ConditionalTokens`. It's the only mechanism
+that lets the new Polymarket "Deposit Wallets" stake because all calls for these wallets go through the Polymarket relayer,
+which blocks approve calls to the CTF contract. The `(ids, values)` you transfer must match
+exactly what the payload implies - the YES then NO position id of each market, in the same ascending
+`conditionId` order, skipping zero-amount sides - or the vault reverts `PushDepositMismatch`.
 
 ---
 

@@ -54,6 +54,7 @@ export const stakingVaultAbi = [
     name: "batchDeposit",
     inputs: [
       { name: "conditionIds", type: "bytes32[]" },
+      { name: "questionIds", type: "bytes32[]" },
       { name: "yesAmounts", type: "uint256[]" },
       { name: "noAmounts", type: "uint256[]" },
       { name: "nonZeroLength", type: "uint256" },
@@ -72,71 +73,26 @@ export const stakingVaultAbi = [
       { name: "yieldRecipient", type: "address" },
       { name: "nonZeroLength", type: "uint256" },
       { name: "referralCode", type: "uint256" },
+      { name: "wrapYieldToPolyUsd", type: "bool" },
     ],
     outputs: [],
   },
 ] as const;
 
-// ───────────────────────────────────────────────────────────────────────────────
-// UPCOMING contract upgrade.
-// When the upgrade ships, swap to this ABI. Diff vs the current ABI:
-//   - `batchDeposit` gains `bytes32[] questionIds` of the markets between `conditionIds` and `yesAmounts`.
-//   - `batchWithdraw` gains a trailing `bool wrapYieldToPolyUsd`. If true, USDC.e yield is
-//     wrapped to PolyUSD via Polymarket's CollateralOnramp before transfer.
-//   - Both functions REQUIRE `conditionIds` sorted strictly ascending (no duplicates) — this
-//     is true today already (see `sortBatchByConditionId` below) and you should start doing it
-//     now so nothing breaks on upgrade day.
-//
-// export const stakingVaultAbi = [
-//     {
-//         type: "function",
-//         stateMutability: "nonpayable",
-//         name: "batchDeposit",
-//         inputs: [
-//             { name: "conditionIds", type: "bytes32[]" },
-//             { name: "questionIds", type: "bytes32[]" },
-//             { name: "yesAmounts", type: "uint256[]" },
-//             { name: "noAmounts", type: "uint256[]" },
-//             { name: "nonZeroLength", type: "uint256" },
-//             { name: "referralCode", type: "uint256" },
-//         ],
-//         outputs: [],
-//     },
-//     {
-//         type: "function",
-//         stateMutability: "nonpayable",
-//         name: "batchWithdraw",
-//         inputs: [
-//             { name: "conditionIds", type: "bytes32[]" },
-//             { name: "yesShares", type: "uint256[]" },
-//             { name: "noShares", type: "uint256[]" },
-//             { name: "yieldRecipient", type: "address" },
-//             { name: "nonZeroLength", type: "uint256" },
-//             { name: "referralCode", type: "uint256" },
-//             { name: "wrapYieldToPolyUsd", type: "bool" },
-//         ],
-//         outputs: [],
-//     },
-// ] as const;
-// ───────────────────────────────────────────────────────────────────────────────
-
 export const robinLensAbi = [
   {
     type: "function",
     stateMutability: "view",
-    name: "batchGetUserPortfolio",
+    name: "batchGetUserSharesAndAssets",
     inputs: [
       { name: "user", type: "address" },
       { name: "conditionIds", type: "bytes32[]" },
-      { name: "twapPricesYes", type: "uint256[]" },
     ],
     outputs: [
       { name: "yesShares", type: "uint256[]" },
       { name: "noShares", type: "uint256[]" },
       { name: "yesAssets", type: "uint256[]" },
       { name: "noAssets", type: "uint256[]" },
-      { name: "yesYield", type: "uint256[]" },
-      { name: "noYield", type: "uint256[]" },
     ],
   },
 ] as const;
