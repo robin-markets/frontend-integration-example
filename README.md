@@ -14,7 +14,7 @@ A Polymarket user holds ERC-1155 conditional tokens inside their **Polymarket Gn
 
 Polymarket proxy wallets (MagicLink users; signed up via e-mail) are not currently supported because they need to export their private key in order to use Robin.
 
-The new Polymarket DepositWallets (used for every fresh Polymarket account) integrate via the push-deposit flow (section 10) instead of the approve/`batchDeposit` path below. All calls for DepositWallets go through the Polymarket relayer. Please refer to the Polymarket documentation for guidance on how to integrate deposit wallets from their side.
+The newer Polymarket **DepositWallets** (every fresh Polymarket account) hold the CTs instead of a Safe proxy. Detect which kind of wallet the connected EOA controls — see section 3 and `[wallet.ts](./src/wallet.ts)` — and branch on it. DepositWallets integrate via the push-deposit flow (section 10) instead of the approve/`batchDeposit` path below, and **all** their calls go through the Polymarket relayer (which blocks `approve`). The Safe-batch description below is the legacy Safe-proxy path. Refer to Polymarket's documentation for deploying/operating DepositWallets on their side.
 
 A single Robin deposit/withdraw is therefore a **Safe batch** (multi-send) that contains 2–4
 transactions:
@@ -43,6 +43,7 @@ All four/two calls run atomically inside a single `Safe.execTransaction` via Mul
 
 ## 2. Contract addresses (Polygon mainnet)
 
+
 | Name                 | Address                                                       |
 | -------------------- | ------------------------------------------------------------- |
 | `SAFE_PROXY_FACTORY` | `0xaacFeEa03eb1561C4e67d661e40682Bd20E3541b`                  |
@@ -52,37 +53,60 @@ All four/two calls run atomically inside a single `Safe.execTransaction` via Mul
 | `CONDITIONAL_TOKENS` | `0x4D97DCd97eC945f40cF65F87097ACe5EA0476045` (Polymarket CTF) |
 | `USDCE`              | `0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174`                  |
 
+
 ---
 
-## 3. Discovering the user's Safe proxy address
+## 3. Discovering the user's wallet (DepositWallet or Safe proxy)
 
-The EOA the user connects with is **not** where their CT tokens live. The CTs live in the
-Polymarket Gnosis Safe proxy. Compute its address from the EOA:
+The EOA the user connects with is **not** where their CT tokens live. They live in the user's
+Polymarket account, which is one of two kinds: a newer **DepositWallet** (every fresh Polymarket
+account) or a legacy **Gnosis Safe proxy**. Detect which is deployed for the EOA and use that
+address everywhere (positions, balances, shares, `yieldRecipient`, …). **A deployed DepositWallet
+takes priority over a Safe.** See `[wallet.ts](./src/wallet.ts)` for a concise `resolveWallet()`:
 
 ```ts
-const proxyAddress = await publicClient.readContract({
+import { RelayClient } from "@polymarket/builder-relayer-client";
+const relayClient = new RelayClient(POLYMARKET_RELAYER_URL, 137, walletClient);
+
+// 1. DepositWallet — the address is derived locally (CREATE2) from the EOA; deployment is a
+//    read-only relayer call. Neither needs builder-signing credentials.
+const depositWallet = await relayClient.deriveDepositWalletAddress();
+if (await relayClient.getDeployed(depositWallet, "WALLET")) {
+  // → { kind: "deposit-wallet", address: depositWallet }
+}
+
+// 2. else the legacy Safe proxy — computed from the EOA, deployment checked via getCode.
+const safe = await publicClient.readContract({
   address: SAFE_PROXY_FACTORY,
   abi: safeProxyFactoryAbi,
   functionName: "computeProxyAddress",
   args: [eoaAddress],
 });
+const code = await publicClient.getCode({ address: safe });
+if (code && code !== "0x") {
+  // → { kind: "safe", address: safe }
+}
+
+// 3. neither deployed → the user must transact on Polymarket once to deploy their wallet.
+//    Robin does not deploy it for them.
 ```
 
-Check whether the proxy is already deployed:
+**Which path each wallet uses for transactions:**
 
-```ts
-const code = await publicClient.getCode({ address: proxyAddress });
-const deployed = !!code && code !== "0x";
-```
 
-If `deployed === false` you'll need the user to deploy it first (e.g. by performing any
-transaction on Polymarket). Robin does **not** deploy this proxy for users.
+| Wallet        | Deposit flow                                       | Transport                                                                                             |
+| ------------- | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Safe proxy    | pull (`approve` → `batchDeposit` → revoke) or push | `Safe.execTransaction` — see `[deposit.ts](./src/deposit.ts)` / `[withdraw.ts](./src/withdraw.ts)`    |
+| DepositWallet | **push only** — the relayer blocks `approve`       | Polymarket relayer `executeDepositWalletBatch` — see §10 + `[deposit-push.ts](./src/deposit-push.ts)` |
+
+
+Withdraw is a single `batchWithdraw` for both wallet kinds; only the transport differs.
 
 ---
 
 ## 4. Listing the user's Polymarket positions
 
-Use Polymarket's public data API. The `user` parameter is the **Safe proxy address**, not the EOA.
+Use Polymarket's public data API. The `user` parameter is the user's **wallet address** (DepositWallet or Safe proxy — see section 3), not the EOA.
 
 ```
 GET https://data-api.polymarket.com/positions?user={proxyAddress}&sizeThreshold=0.1
@@ -203,6 +227,8 @@ await publicClient.waitForTransactionReceipt({ hash: result.hash });
 
 Under the hood `protocol-kit` deploys/uses the MultiSend contract and wraps everything in a single `execTransaction(...)` call against the proxy.
 
+This is the **Safe** transport. A **DepositWallet** submits the same calls (`{ to, value, data }`) through the Polymarket relayer's `executeDepositWalletBatch(calls, walletAddress, deadline)` instead — no `Safe.init`. The example hides this behind `executeViaWallet(wallet, calls)` in `[wallet.ts](./src/wallet.ts)`: build the batch once, then dispatch it for whichever wallet `resolveWallet()` returned. `deposit-push.ts` and `withdraw.ts` run for **both** wallet kinds; `deposit.ts` (the pull path) is Safe-only.
+
 ---
 
 ## 8. `batchDeposit` arguments
@@ -221,21 +247,21 @@ function batchDeposit(
 Rules:
 
 - **Sorted batch (REQUIRED).** `conditionIds` must be sorted strictly ascending (by `bytes32`
-  numeric value). Duplicates revert with `UnsortedConditionIds`. The other arrays must use the
-  same permutation. This is how the vault detects duplicate-market attacks in O(n) - sort
-  off-chain and you're safe. See `sortBatchByConditionId` in `[shared.ts](./src/shared.ts)`.
-- **`questionIds`** must be aligned with `conditionIds`. It's only used to auto-initialise a market
-  on its first ever deposit (the vault verifies `conditionId == keccak256(oracle, questionId, 2)`);
-  for already-initialised markets the value is ignored, but the array must still be present, aligned,
-  and the same length. Source it from Polymarket Gamma's `questionID` field - see `fetchQuestionIds`
-  in `[shared.ts](./src/shared.ts)`.
+numeric value). Duplicates revert with `UnsortedConditionIds`. The other arrays must use the
+same permutation. This is how the vault detects duplicate-market attacks in O(n) - sort
+off-chain and you're safe. See `sortBatchByConditionId` in `[shared.ts](./src/shared.ts)`.
+- `**questionIds`** must be aligned with `conditionIds`. It's only used to auto-initialise a market
+on its first ever deposit (the vault verifies `conditionId == keccak256(oracle, questionId, 2)`);
+for already-initialised markets the value is ignored, but the array must still be present, aligned,
+and the same length. Source it from Polymarket Gamma's `questionID` field - see `fetchQuestionIds`
+in `[shared.ts](./src/shared.ts)`.
 - If your selection covers both YES and NO of the same `conditionId`, **merge them into one row**
-  (one `yesAmounts[i]`, one `noAmounts[i]`) before sorting. Two rows with the same conditionId
-  will revert.
+(one `yesAmounts[i]`, one `noAmounts[i]`) before sorting. Two rows with the same conditionId
+will revert.
 - For every `i`, at least one of `yesAmounts[i] / noAmounts[i]` must be non-zero.
 - `nonZeroLength` must equal the actual count, otherwise the vault reverts.
 - The vault transfers tokens from the Safe (msg.sender), which is why you must approve the vault
-  on `ConditionalTokens` first.
+on `ConditionalTokens` first.
 
 ---
 
@@ -335,7 +361,7 @@ way it does, or you'll hit `PushDepositMismatch`:
 
 - Iterate `sortedRows` in ascending conditionId order.
 - For each row: if `yesAmount > 0`, push the market's YES positionId then yesAmount. Then if
-  `noAmount > 0`, push the NO positionId then noAmount.
+`noAmount > 0`, push the NO positionId then noAmount.
 - Skip zero sides entirely (they must NOT appear in `ids`/`values`).
 
 The YES/NO position ids are the on-chain ERC-1155 token ids. Polymarket's `/positions` data API
@@ -375,20 +401,23 @@ ConditionalTokens.safeBatchTransferFrom(safe, vault, ids, values, depositData);
 **Failure modes specific to push-deposit**
 
 - `PushDepositMismatch` — your `(ids, values)` doesn't equal what the declared payload implies.
-  Most common causes: wrong YES/NO ordering, included a zero-amount side, mixed up
-  YES/NO positionIds for a neg-risk market.
+Most common causes: wrong YES/NO ordering, included a zero-amount side, mixed up
+YES/NO positionIds for a neg-risk market.
 - `UnsolicitedTransfer` — the inbound transfer isn't from the CTF (i.e. you're trying to push
-  some other ERC-1155 to the vault), or your `data` didn't decode as the deposit payload.
+some other ERC-1155 to the vault), or your `data` didn't decode as the deposit payload.
 - Any other deposit revert (`UnsortedConditionIds`, `ZeroAmount`, `LengthMismatch`, …) — same as
-  the pull-deposit path; the CTF transfer is rolled back.
+the pull-deposit path; the CTF transfer is rolled back.
 
 ---
 
 ## 11. Commands
 
 ```bash
+cp .env.example .env   # set EOA_PRIVATE_KEY (POLYGON_RPC_URL is optional) | Use a wallet library in production instead of exposing the private key directly
 npm install
 npm run deposit
 npm run deposit:push
 npm run withdraw
 ```
+
+Wallet detection lives in `[wallet.ts](./src/wallet.ts)` (`resolveWallet()`).

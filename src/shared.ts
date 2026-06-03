@@ -1,18 +1,8 @@
-// Shared addresses, ABIs (minimal), and helper functions used by deposit.ts and withdraw.ts.
+// Shared addresses and helpers (Polymarket/Robin fetches, batch sorting, CLI pickers) used by the
+// deposit/withdraw flows. The viem clients + wallet resolution live in wallet.ts.
 
-import "dotenv/config";
 import * as readline from "node:readline/promises";
-import {
-  createPublicClient,
-  createWalletClient,
-  formatUnits,
-  http,
-  parseUnits,
-  type Address,
-} from "viem";
-import { privateKeyToAccount } from "viem/accounts";
-import { polygon } from "viem/chains";
-import { safeProxyFactoryAbi } from "./abis";
+import { formatUnits, parseUnits, type Address } from "viem";
 import {
   TwapPayload,
   TwapMarket,
@@ -24,7 +14,7 @@ import {
 // ============ Addresses (Polygon mainnet) ============
 
 export const ADDR = {
-  SAFE_PROXY_FACTORY: "0xaacFeEa03eb1561C4e67d661e40682Bd20E3541b" as Address,
+  SAFE_PROXY_FACTORY: "0xaacFeEa03eb1561C4e67d661e40682Bd20E3541b" as Address, //Polymarket's Safe factory
   STAKING_VAULT: "0xcb7444981296D08dA7161B75378e3773DbF5D806" as Address,
   TWAP_ORACLE: "0xf08a02deeB4C7A09fAc8e8C6f8508D724612796f" as Address,
   ROBIN_LENS: "0xDbB59819C5a4d28374a162e375Ce4595c8650dDC" as Address,
@@ -38,23 +28,6 @@ export const POLYMARKET_DATA = "https://data-api.polymarket.com";
 // All token amounts and prices in the Robin vault are 6-decimal fixed-point.
 export const UNDERLYING_DECIMALS = 6;
 export const PRICE_SCALE = 10n ** BigInt(UNDERLYING_DECIMALS);
-
-// ============ viem clients ============
-
-const PK = process.env.EOA_PRIVATE_KEY;
-if (!PK) throw new Error("EOA_PRIVATE_KEY missing in .env");
-export const account = privateKeyToAccount(PK as `0x${string}`);
-
-export const publicClient = createPublicClient({
-  chain: polygon,
-  transport: http(process.env.POLYGON_RPC_URL || "https://polygon.drpc.org"),
-});
-
-export const walletClient = createWalletClient({
-  account,
-  chain: polygon,
-  transport: http(process.env.POLYGON_RPC_URL || "https://polygon.drpc.org"),
-});
 
 // ============ Polymarket fetches ============
 
@@ -126,26 +99,6 @@ export async function fetchQuestionIds(
     if (!q) throw new Error(`No questionId for ${cid}`);
     return q;
   });
-}
-
-// ============ Misc helpers ============
-
-export async function computeProxyAddress(eoa: Address): Promise<Address> {
-  return (await publicClient.readContract({
-    address: ADDR.SAFE_PROXY_FACTORY,
-    abi: safeProxyFactoryAbi,
-    functionName: "computeProxyAddress",
-    args: [eoa],
-  })) as Address;
-}
-
-export async function assertProxyDeployed(proxy: Address): Promise<void> {
-  const code = await publicClient.getCode({ address: proxy });
-  if (!code || code === "0x") {
-    throw new Error(
-      `Polymarket Safe proxy ${proxy} is not deployed. The user must perform any action on Polymarket first.`,
-    );
-  }
 }
 
 // ============ Batch ordering ============

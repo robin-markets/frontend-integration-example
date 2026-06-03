@@ -1,7 +1,11 @@
-// Minimal end-to-end deposit example.
+// Minimal end-to-end deposit example — the PULL path (`approve` → `batchDeposit` → revoke).
 //
-// Lists the EOA's Polymarket positions, asks the user which ones to deposit (any number, possibly
-// covering multiple markets and both sides of the same market), then deposits them all in a single
+// This path is **Safe-proxy only**: the new Polymarket DepositWallet relayer blocks `approve`, so
+// DepositWallet users must use the push flow instead (see deposit-push.ts). withdraw.ts and the push
+// deposit both work for either wallet kind.
+//
+// Lists the wallet's Polymarket positions, asks the user which ones to deposit (any number, possibly
+// covering multiple markets and both sides of the same market), then deposits them in a single
 // Safe batch.
 
 import {
@@ -10,21 +14,23 @@ import {
   parseUnits,
   type Address,
 } from "viem";
-import Safe from "@safe-global/protocol-kit";
 import {
   ADDR,
   UNDERLYING_DECIMALS,
-  account,
-  assertProxyDeployed,
-  computeProxyAddress,
   fetchQuestionIds,
   fetchTwap,
   fetchUserPositions,
   pickManyFromList,
   promptAmount6dec,
-  publicClient,
   sortBatchByConditionId,
 } from "./shared.js";
+import {
+  account,
+  publicClient,
+  resolveWallet,
+  executeViaWallet,
+  type Call,
+} from "./wallet.js";
 import {
   twapOracleAbi,
   conditionalTokensAbi,
@@ -34,13 +40,17 @@ import { DepositRow } from "./types.js";
 
 async function main() {
   const eoa = account.address as Address;
-  const proxy = await computeProxyAddress(eoa);
-  console.log(`EOA:   ${eoa}`);
-  console.log(`Proxy: ${proxy}`);
-  await assertProxyDeployed(proxy);
+  const wallet = await resolveWallet();
+  console.log(`EOA:    ${eoa}`);
+  console.log(`Wallet: ${wallet.address} (${wallet.kind})`);
+  if (wallet.kind !== "safe") {
+    throw new Error(
+      "Pull deposit is Safe-only — DepositWallets must use the push flow (npm run deposit:push), since their relayer blocks `approve`.",
+    );
+  }
 
   // 1. Fetch positions and let the user pick any number of them.
-  const positions = await fetchUserPositions(proxy);
+  const positions = await fetchUserPositions(wallet.address);
   if (positions.length === 0)
     throw new Error("No Polymarket positions found in proxy wallet.");
 
@@ -115,7 +125,7 @@ async function main() {
   const twap = await fetchTwap(conditionIds);
 
   // 5. Encode the Safe batch.
-  const txs: { to: string; value: string; data: `0x${string}` }[] = [];
+  const txs: Call[] = [];
 
   if (twap) {
     txs.push({
@@ -166,19 +176,11 @@ async function main() {
     }),
   });
 
-  // 6. Execute via Safe protocol-kit.
-  const safe = await Safe.init({
-    provider: process.env.POLYGON_RPC_URL || "https://polygon.drpc.org",
-    signer: process.env.EOA_PRIVATE_KEY,
-    safeAddress: proxy,
-  });
-  const safeTx = await safe.createTransaction({ transactions: txs });
-  const exec = await safe.executeTransaction(safeTx, { gasLimit: 5_000_000n });
-  console.log(`Submitted: ${exec.hash}`);
+  // 6. Execute via the Safe (pull deposit is Safe-only).
+  const hash = await executeViaWallet(wallet, txs);
+  console.log(`Submitted: ${hash}`);
 
-  const receipt = await publicClient.waitForTransactionReceipt({
-    hash: exec.hash as `0x${string}`,
-  });
+  const receipt = await publicClient.waitForTransactionReceipt({ hash });
   console.log(`Done. status=${receipt.status} block=${receipt.blockNumber}`);
 }
 

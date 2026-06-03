@@ -1,7 +1,7 @@
 // Push-deposit flow — an alternative to the `approve -> batchDeposit -> revoke` batch in deposit.ts.
 //
 // The user pushes CT tokens directly to the vault via
-// `CTF.safeBatchTransferFrom(safe, vault, ids, values, data)`. The vault's `onERC1155BatchReceived`
+// `CTF.safeBatchTransferFrom(wallet, vault, ids, values, data)`. The vault's `onERC1155BatchReceived`
 // hook decodes `data` as the deposit payload and runs the full deposit pipeline atomically.
 //
 // Why bother:
@@ -9,6 +9,9 @@
 //   - No standing approval on `ConditionalTokens` → the vault can never pull tokens unannounced.
 //   - It's the only path the new Polymarket "Deposit Wallets" can use — their relayer blocks
 //     `approve` calls to the CTF.
+//
+// Works for BOTH wallet kinds: `resolveWallet()` picks the account and `executeViaWallet()` submits
+// the batch via Safe.execTransaction (safe) or the Polymarket relayer (deposit-wallet). See wallet.ts.
 
 import {
   encodeAbiParameters,
@@ -17,33 +20,34 @@ import {
   parseUnits,
   type Address,
 } from "viem";
-import Safe from "@safe-global/protocol-kit";
 import {
   ADDR,
   UNDERLYING_DECIMALS,
-  account,
-  assertProxyDeployed,
-  computeProxyAddress,
   fetchQuestionIds,
   fetchTwap,
   fetchUserPositions,
   pickManyFromList,
   promptAmount6dec,
-  publicClient,
   sortBatchByConditionId,
 } from "./shared.js";
+import {
+  account,
+  publicClient,
+  resolveWallet,
+  executeViaWallet,
+  type Call,
+} from "./wallet.js";
 import { twapOracleAbi, conditionalTokensAbi } from "./abis.js";
 import { PushDepositRow } from "./types.js";
 
 async function main() {
   const eoa = account.address as Address;
-  const proxy = await computeProxyAddress(eoa);
-  console.log(`EOA:   ${eoa}`);
-  console.log(`Proxy: ${proxy}`);
-  await assertProxyDeployed(proxy);
+  const wallet = await resolveWallet();
+  console.log(`EOA:    ${eoa}`);
+  console.log(`Wallet: ${wallet.address} (${wallet.kind})`);
 
   // 1. Pick positions.
-  const positions = await fetchUserPositions(proxy);
+  const positions = await fetchUserPositions(wallet.address);
   if (positions.length === 0)
     throw new Error("No Polymarket positions found in proxy wallet.");
 
@@ -170,8 +174,8 @@ async function main() {
   // 7. TWAP, same as the pull-deposit flow.
   const twap = await fetchTwap(conditionIds);
 
-  // 8. Encode the Safe batch + ONE safeBatchTransferFrom call.
-  const txs: { to: string; value: string; data: `0x${string}` }[] = [];
+  // 8. Encode the batch + ONE safeBatchTransferFrom call.
+  const txs: Call[] = [];
 
   if (twap) {
     txs.push({
@@ -191,23 +195,16 @@ async function main() {
     data: encodeFunctionData({
       abi: conditionalTokensAbi,
       functionName: "safeBatchTransferFrom",
-      args: [proxy, ADDR.STAKING_VAULT, ids, values, depositData],
+      args: [wallet.address, ADDR.STAKING_VAULT, ids, values, depositData],
     }),
   });
 
-  // 9. Execute via Safe.
-  const safe = await Safe.init({
-    provider: process.env.POLYGON_RPC_URL || "https://polygon.drpc.org",
-    signer: process.env.EOA_PRIVATE_KEY,
-    safeAddress: proxy,
-  });
-  const safeTx = await safe.createTransaction({ transactions: txs });
-  const exec = await safe.executeTransaction(safeTx, { gasLimit: 5_000_000n });
-  console.log(`Submitted: ${exec.hash}`);
+  // 9. Execute AS the resolved wallet — Safe.execTransaction (safe) or the Polymarket relayer
+  //    (deposit-wallet). Push is the only deposit path DepositWallets can use.
+  const hash = await executeViaWallet(wallet, txs);
+  console.log(`Submitted: ${hash}`);
 
-  const receipt = await publicClient.waitForTransactionReceipt({
-    hash: exec.hash as `0x${string}`,
-  });
+  const receipt = await publicClient.waitForTransactionReceipt({ hash });
   console.log(`Done. status=${receipt.status} block=${receipt.blockNumber}`);
 }
 

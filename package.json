@@ -8,13 +8,15 @@
     "withdraw": "tsx src/withdraw.ts"
   },
   "dependencies": {
-    "@safe-global/protocol-kit": "5.2.27",
-    "dotenv": "16.6.1",
-    "viem": "2.50.4"
+    "@polymarket/builder-relayer-client": "^0.0.10",
+    "@polymarket/builder-signing-sdk": "^1.0.0",
+    "@safe-global/protocol-kit": "^7.2.0",
+    "dotenv": "^17.4.2",
+    "viem": "^2.52.0"
   },
   "devDependencies": {
     "@types/node": "^25.9.1",
-    "tsx": "^4.19.0",
-    "typescript": "^5.5.0"
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3"
   }
 }

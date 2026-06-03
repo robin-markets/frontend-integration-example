@@ -4,36 +4,33 @@
 // withdraw (any number), then withdraws their shares in a single Safe batch.
 
 import { encodeFunctionData, formatUnits, type Address } from "viem";
-import Safe from "@safe-global/protocol-kit";
 import {
   ADDR,
   UNDERLYING_DECIMALS,
-  account,
-  assertProxyDeployed,
-  computeProxyAddress,
   fetchDepositedPositions,
   fetchTwap,
   pickManyFromList,
   promptAmount6dec,
-  publicClient,
   sortBatchByConditionId,
 } from "./shared.js";
 import {
-  twapOracleAbi,
-  stakingVaultAbi,
-  conditionalTokensAbi,
-} from "./abis.js";
+  account,
+  publicClient,
+  resolveWallet,
+  executeViaWallet,
+  type Call,
+} from "./wallet.js";
+import { twapOracleAbi, stakingVaultAbi } from "./abis.js";
 import { WithdrawRow } from "./types.js";
 
 async function main() {
   const eoa = account.address as Address;
-  const proxy = await computeProxyAddress(eoa);
-  console.log(`EOA:   ${eoa}`);
-  console.log(`Proxy: ${proxy}`);
-  await assertProxyDeployed(proxy);
+  const wallet = await resolveWallet();
+  console.log(`EOA:    ${eoa}`);
+  console.log(`Wallet: ${wallet.address} (${wallet.kind})`);
 
   // 1. Fetch deposited positions from Robin's indexer API.
-  const deposited = await fetchDepositedPositions(proxy);
+  const deposited = await fetchDepositedPositions(wallet.address);
   if (deposited.length === 0)
     throw new Error("No deposited positions to withdraw.");
 
@@ -99,7 +96,7 @@ async function main() {
     ),
   );
   const referralCode = 0n;
-  const yieldRecipient = proxy;
+  const yieldRecipient = wallet.address;
   // Set to `true` to receive yield as PolyUSD (wrapped via Polymarket's CollateralOnramp), or
   // `false` to keep USDC.e.
   const wrapYieldToPolyUsd = false;
@@ -108,7 +105,7 @@ async function main() {
   const twap = await fetchTwap(conditionIds);
 
   // 5. Build batch.
-  const txs: { to: string; value: string; data: `0x${string}` }[] = [];
+  const txs: Call[] = [];
 
   if (twap) {
     txs.push({
@@ -140,19 +137,12 @@ async function main() {
     }),
   });
 
-  // 6. Execute via Safe.
-  const safe = await Safe.init({
-    provider: process.env.POLYGON_RPC_URL || "https://polygon.drpc.org",
-    signer: process.env.EOA_PRIVATE_KEY,
-    safeAddress: proxy,
-  });
-  const safeTx = await safe.createTransaction({ transactions: txs });
-  const exec = await safe.executeTransaction(safeTx, { gasLimit: 5_000_000n });
-  console.log(`Submitted: ${exec.hash}`);
+  // 6. Execute AS the resolved wallet — Safe.execTransaction (safe) or the Polymarket relayer
+  //    (deposit-wallet). batchWithdraw is identical for both; only the transport differs.
+  const hash = await executeViaWallet(wallet, txs);
+  console.log(`Submitted: ${hash}`);
 
-  const receipt = await publicClient.waitForTransactionReceipt({
-    hash: exec.hash as `0x${string}`,
-  });
+  const receipt = await publicClient.waitForTransactionReceipt({ hash });
   console.log(`Done. status=${receipt.status} block=${receipt.blockNumber}`);
 }
 
