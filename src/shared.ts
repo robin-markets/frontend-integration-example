@@ -1,15 +1,10 @@
-// Shared addresses and helpers (Polymarket/Robin fetches, batch sorting, CLI pickers) used by the
-// deposit/withdraw flows. The viem clients + wallet resolution live in wallet.ts.
+// Shared addresses, constants, and CLI helpers (batch sorting, amount/confirmation prompts) used
+// across the flows. Polymarket fetches live in polymarket-api.ts, the Robin Integration API client
+// (incl. TWAP) in robin-api.ts, and the viem clients + wallet resolution in wallet.ts.
 
+import "dotenv/config";
 import * as readline from "node:readline/promises";
 import { formatUnits, parseUnits, type Address } from "viem";
-import {
-  TwapPayload,
-  TwapMarket,
-  PolymarketPosition,
-  DepositedPosition,
-  DepositedPositionResponse,
-} from "./types";
 
 // ============ Addresses (Polygon mainnet) ============
 
@@ -21,85 +16,9 @@ export const ADDR = {
   CONDITIONAL_TOKENS: "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045" as Address,
 };
 
-export const ROBIN_API = "https://app.robin.markets/api";
-export const POLYMARKET_GAMMA = "https://gamma-api.polymarket.com";
-export const POLYMARKET_DATA = "https://data-api.polymarket.com";
-
 // All token amounts and prices in the Robin vault are 6-decimal fixed-point.
 export const UNDERLYING_DECIMALS = 6;
 export const PRICE_SCALE = 10n ** BigInt(UNDERLYING_DECIMALS);
-
-// ============ Polymarket fetches ============
-
-// Fetches the user's Polymarket positions, merged so each market appears at most once. Per-side
-// raw records (one per (conditionId, outcome)) get folded into a single { yesSize, noSize,
-// yesPositionId, noPositionId } row. The unheld side's positionId comes from `oppositeAsset` on
-// the held side's record — Polymarket includes it specifically so callers don't have to derive
-// it on-chain.
-export async function fetchUserPositions(
-  proxyAddress: Address,
-): Promise<PolymarketPosition[]> {
-  const url = `${POLYMARKET_DATA}/positions?user=${proxyAddress}&sizeThreshold=0.1&limit=100`;
-  const res = await fetch(url);
-  if (!res.ok)
-    throw new Error(`Polymarket positions fetch failed: ${res.status}`);
-  const raw = (await res.json()) as Array<{
-    conditionId: `0x${string}`;
-    outcome: "Yes" | "No";
-    size: number | string;
-    title: string;
-    asset: string;
-    oppositeAsset: string;
-  }>;
-  const byCid = new Map<`0x${string}`, PolymarketPosition>();
-  for (const p of raw) {
-    const existing = byCid.get(p.conditionId);
-    const row: PolymarketPosition = existing ?? {
-      conditionId: p.conditionId,
-      title: p.title,
-      yesSize: 0,
-      noSize: 0,
-      yesPositionId: 0n,
-      noPositionId: 0n,
-    };
-    if (p.outcome === "Yes") {
-      row.yesSize = Number(p.size);
-      row.yesPositionId = BigInt(p.asset);
-      // Fill the NO side's id from `oppositeAsset` only if it wasn't already set by a NO row.
-      if (row.noPositionId === 0n) row.noPositionId = BigInt(p.oppositeAsset);
-    } else {
-      row.noSize = Number(p.size);
-      row.noPositionId = BigInt(p.asset);
-      if (row.yesPositionId === 0n) row.yesPositionId = BigInt(p.oppositeAsset);
-    }
-    byCid.set(p.conditionId, row);
-  }
-  return Array.from(byCid.values());
-}
-
-// Polymarket questionIds for `batchDeposit`, returned aligned 1:1 with `conditionIds` (used for
-// auto-init). Throws if Polymarket doesn't return a questionId for any requested market.
-export async function fetchQuestionIds(
-  conditionIds: `0x${string}`[],
-): Promise<`0x${string}`[]> {
-  if (conditionIds.length === 0) return [];
-  const qs = conditionIds
-    .map((id) => `condition_ids=${encodeURIComponent(id)}`)
-    .join("&");
-  const url = `${POLYMARKET_GAMMA}/markets/keyset?${qs}&limit=100`;
-  const res = await fetch(url);
-  if (!res.ok)
-    throw new Error(`Polymarket questionIds fetch failed: ${res.status}`);
-  const data = (await res.json()) as {
-    markets: Array<{ conditionId: `0x${string}`; questionID: `0x${string}` }>;
-  };
-  const byCid = new Map(data.markets.map((m) => [m.conditionId, m.questionID]));
-  return conditionIds.map((cid) => {
-    const q = byCid.get(cid);
-    if (!q) throw new Error(`No questionId for ${cid}`);
-    return q;
-  });
-}
 
 // ============ Batch ordering ============
 //
@@ -218,69 +137,21 @@ export async function pickManyFromList<T>(
   }
 }
 
-// ============ Robin deposited positions ============
-//
-// Hits Robin's own API (https://app.robin.markets/api/positions) — this is the source of truth
-// for what the user has deposited into the vault, including share counts and TVL. Polymarket's
-// data API only knows about CT balances, not vault shares.
-
-export async function fetchDepositedPositions(
-  proxyAddress: Address,
-): Promise<DepositedPosition[]> {
-  const all: DepositedPosition[] = [];
-  let page = 1;
-  for (;;) {
-    const url = `${ROBIN_API}/positions?address=${proxyAddress}&category=active&page=${page}`;
-    const res = await fetch(url);
-    if (!res.ok)
-      throw new Error(
-        `Robin positions fetch failed: ${res.status} ${await res.text()}`,
-      );
-    const data = (await res.json()) as DepositedPositionResponse;
-    for (const p of data.positions) {
-      all.push({
-        conditionId: p.conditionId,
-        question: p.question,
-        yesShares: BigInt(p.yesShares),
-        noShares: BigInt(p.noShares),
-        positionTvl: BigInt(p.positionTvl ?? "0"),
-      });
-    }
-    if (all.length >= data.total || data.positions.length === 0) break;
-    page += 1;
-  }
-  return all;
-}
-
-// ============ TWAP fetch (uses Robin's proxy) ============
-
-export async function fetchTwap(
-  conditionIds: `0x${string}`[],
-): Promise<TwapPayload | null> {
-  const res = await fetch(`${ROBIN_API}/twap/twap`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ conditionIds }),
+// Yes/no confirmation gate. Returns true only on "y"/"yes"; blank or "n"/"no" → false (so the
+// default of just hitting Enter is the safe "don't do it"). Re-asks on anything else.
+export async function confirm(prompt: string): Promise<boolean> {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
   });
-  if (!res.ok)
-    throw new Error(`TWAP fetch failed: ${res.status} ${await res.text()}`);
-  const data = await res.json();
-
-  // Mode A: oracle already submitted on-chain — nothing for us to do.
-  if ("txHash" in data) return null;
-
-  const markets: TwapMarket[] = (data.markets as any[]).map((m) => ({
-    required: m.required,
-    conditionId: m.conditionId,
-    startTimestamp: BigInt(m.startTimestamp),
-    endTimestamp: BigInt(m.endTimestamp),
-    twapPriceYes: BigInt(m.twapPriceYes),
-    marketEndedAt: BigInt(m.marketEndedAt),
-    marketEndYesPrice: BigInt(m.marketEndYesPrice),
-  }));
-
-  // No-op short-circuit: nothing required, nothing finalized.
-  if (markets.every((m) => !m.required && m.marketEndedAt === 0n)) return null;
-
-  return { markets, signature: data.signature };
+  try {
+    for (;;) {
+      const ans = (await rl.question(prompt)).trim().toLowerCase();
+      if (ans === "y" || ans === "yes") return true;
+      if (ans === "" || ans === "n" || ans === "no") return false;
+      console.log('Please answer "y" or "n".');
+    }
+  } finally {
+    rl.close();
+  }
 }

@@ -4,6 +4,9 @@ This document describes everything a third-party frontend needs to know in order
 
 Network: **Polygon (chainId 137)**. All token amounts and prices use **6 decimals**.
 
+> **Showing APY & positions.** Robin provides a read-only **Integration API** (`/api/v1`). See
+> **section 12**. It's what you'd use to render "Stake on Robin for ~X% APY" in your UI.
+
 > **Disclaimer.** This guide and the accompanying code in `[src/](./src)` are provided **as is**, without warranty of any kind, express or implied, including but not limited to fitness for a particular purpose, accuracy, or non-infringement. Robin Markets makes no guarantee that the code is correct, complete, secure, or up to date, and accepts no liability for any loss of funds, opportunity, or data arising from its use. The examples are intentionally minimal - they are a starting point for your own integration, not a production-ready library. Before shipping anything that touches user funds: audit the code, test against a fork, and verify contract addresses and API endpoints against the current deployment.
 
 ---
@@ -53,6 +56,9 @@ All four/two calls run atomically inside a single `Safe.execTransaction` via Mul
 | `CONDITIONAL_TOKENS` | `0x4D97DCd97eC945f40cF65F87097ACe5EA0476045` (Polymarket CTF) |
 | `USDCE`              | `0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174`                  |
 
+
+> These are also available programmatically: `GET https://app.robin.markets/api/v1/contracts` →
+> `{ chainId, vault, conditionalTokens, usdc, lens, twapOracle }`. See section 12.
 
 ---
 
@@ -250,7 +256,7 @@ Rules:
 numeric value). Duplicates revert with `UnsortedConditionIds`. The other arrays must use the
 same permutation. This is how the vault detects duplicate-market attacks in O(n) - sort
 off-chain and you're safe. See `sortBatchByConditionId` in `[shared.ts](./src/shared.ts)`.
-- `**questionIds`** must be aligned with `conditionIds`. It's only used to auto-initialise a market
+- `**questionIds` must be aligned with `conditionIds`. It's only used to auto-initialise a market
 on its first ever deposit (the vault verifies `conditionId == keccak256(oracle, questionId, 2)`);
 for already-initialised markets the value is ignored, but the array must still be present, aligned,
 and the same length. Source it from Polymarket Gamma's `questionID` field - see `fetchQuestionIds`
@@ -285,15 +291,16 @@ Set `wrapYieldToPolyUsd` to `false` to receive yield as USDC.e (the default), or
 wrapped to PolyUSD before transfer to `yieldRecipient`.
 
 You need to know **how many shares the user owns per market and side**. The example reads this from
-Robin's API (`fetchDepositedPositions` in `[shared.ts](./src/shared.ts)`):
+the Robin Integration API (`getPositions` in `[robin-api.ts](./src/robin-api.ts)`):
 
 ```
-GET https://app.robin.markets/api/positions?address={proxyAddress}&category=active&page=1
+GET https://app.robin.markets/api/v1/positions?wallet={walletAddress}&category=active
 ```
 
-It returns the user's currently-deposited positions, paginated, each with `yesShares` / `noShares`
-(6-decimal strings - the ERC-1155 share balances you burn) and a `positionTvl` (6-decimal USD).
-Walk `page=1,2,…` until you've collected `total` rows.
+It returns the user's currently-deposited positions, paginated, each with `shares.yes` / `shares.no`
+(6-decimal strings — the ERC-1155 share balances you burn), the position's current `value`, its live
+`positionApy`, and an accrued-`yield` breakdown (base / guarantee / matching / points). Walk
+`page=1,2,…` until you've collected `total` rows. See section 12 for the full response shape.
 
 **Alternative - read on-chain via the lens.** If you'd rather not depend on Robin's API, the
 `RobinLens` contract returns the same share balances plus their current value in a single call:
@@ -415,9 +422,159 @@ the pull-deposit path; the CTF transfer is rolled back.
 ```bash
 cp .env.example .env   # set EOA_PRIVATE_KEY (POLYGON_RPC_URL is optional) | Use a wallet library in production instead of exposing the private key directly
 npm install
+
+# Read-only — fetch APY / positions from the Integration API (no transaction, no funds moved):
+npm run quote          # market APY headline + a personalized stake quote for your positions
+npm run portfolio      # your staked positions with live APY + accrued-yield breakdown
+
+# Transactions (move funds):
 npm run deposit
 npm run deposit:push
 npm run withdraw
 ```
 
-Wallet detection lives in `[wallet.ts](./src/wallet.ts)` (`resolveWallet()`).
+Wallet detection lives in `[wallet.ts](./src/wallet.ts)` (`resolveWallet()`); the Integration API
+client is `[robin-api.ts](./src/robin-api.ts)`.
+
+---
+
+## 12. Robin Integration API (`/api/v1`) — APY, quotes & positions
+
+Documentation at: [https://docs.robin.markets/developers](https://docs.robin.markets/developers)
+
+A public, **read-only** API for surfacing Robin staking inside your own frontend. You already have
+the Polymarket market data; this returns **what Robin computes on top**: a market's live staking APY,
+a personalized projected APY for a stake the user is about to make, and the state of a wallet's
+existing positions (shares, value, accrued-yield breakdown, live APY).
+
+- **Base URL:** `https://app.robin.markets/api/v1`
+- **Auth:** none; CORS is open (`*`), so you can call it directly from the browser.
+- **Rate limit:** per-IP — back off on `429`.
+- **Units:** token/USD amounts are 6-decimal integer strings (`"1500000"` = 1.5); APY values are
+numbers in **percent** (`6.0` = 6.00%).
+- `**wallet` is the user's resolved Robin wallet (DepositWallet or Safe — section 3), not the EOA.
+
+Typed client + runnable examples: `[robin-api.ts](./src/robin-api.ts)`, `npm run quote`
+(`[quote.ts](./src/quote.ts)`), `npm run portfolio` (`[portfolio.ts](./src/portfolio.ts)`).
+
+### The APY formula
+
+Every APY is built from three layers:
+
+```
+total = max(nativeApy × matchedFraction, guaranteeFloor)   // socialized base, with a floor
+      + matchingBonus                                        // +1% for the pool-balancing side
+      + pointsBoost                                          // personalized Robin Points boost
+```
+
+- **Base** — native (Yearn) yield is socialized across the market by TVL, so only the matched
+fraction earns it; a guarantee floors the result.
+- **Matching** — +1% APY for the minority side (the side that balances the YES/NO pool), scaled by
+how much of a deposit is actually matchable.
+- **Points** — a personalized boost from the wallet's Robin Points balance. You never handle points
+directly: they appear as the `points` line inside the quote/position APY and are folded into the total.
+
+### Endpoints
+
+`**GET /markets/{conditionId}` — address-agnostic staking headline. Returns `404` for a market not
+in Robin's set.
+
+```jsonc
+{
+  "resolved": false,
+  "winningOutcome": null,
+  "tvl": "2100000",
+  "pool": {
+    "matchedFraction": 0.82,
+    "unmatchedYes": "0",
+    "unmatchedNo": "4000000",
+    "minoritySide": "yes",
+  },
+  "apy": {
+    "base": 6.4,
+    "guaranteeFloor": 6.0,
+    "matching": { "yes": 1.0, "no": 0.0 },
+    "yes": 7.4,
+    "no": 6.4, // base + matching (points NOT included here)
+    "min": 6.4,
+    "max": 8.4, // worst / best a staker could earn now (base … base+matching+points)
+    "maxPointsBoost": 1.0, // "up to +1%" ceiling
+    "nativeApy": 5.1, // raw Yearn netAPY, null if temporarily unavailable
+  },
+  "vault": "0x…",
+}
+```
+
+`**GET /markets?conditionIds=a,b,c**` (batch) — up to 25 unique markets in one call:
+`{ "markets": [ /* one MarketApy per found market */ ], "notFound": ["0x…"] }`.
+
+`**POST /markets**` — the **only mutating** endpoint (every read is read-only). Indexes markets so the
+reads can return them: body `{ "conditionIds": ["0x…", …] }` (≤ 25); fetches ids Robin doesn't know
+yet from Polymarket and upserts them. Returns the **same shape as `GET /markets`**
+(`{ markets, notFound }`), so the headlines come back directly — no follow-up read. A `404` / `notFound`
+from a read just means "not indexed yet". The example's `ensureMarkets` calls this and uses the
+returned `markets` directly.
+
+`**GET /markets/{conditionId}/quote?wallet=0x…&yesAmount=…&noAmount=…**` — personalized projected APY
+for a potential deposit. Amounts are 6-dec micro-units, both sides at once (mirroring the deposit
+contract); omit them for a headline projection.
+
+```jsonc
+{
+  "amounts": { "yes": "0", "no": "10000000" },
+  "stakeUsd": "9700000",
+  "projectedApy": {
+    "total": 7.93,
+    "base": 6.0,
+    "matching": 1.0,
+    "points": 0.93,
+  },
+  "points": {
+    "balance": "2500",
+    "boostDays": 217,
+    "portfolioStakeUsd": "2100000",
+  },
+}
+```
+
+> The points boost is portfolio-wide: it spreads over the wallet's whole Robin stake plus this
+> deposit, not just this market.
+
+`**GET /quote?wallet=0x…&conditionIds=a,b&yesAmounts=…&noAmounts=…**` (batch) — up to 25 unique
+markets in one call; `yesAmounts`/`noAmounts` align 1:1 with `conditionIds` (omit for all-zero).
+Returns `{ "wallet": "0x…", "quotes": [ /* one Quote per found market */ ], "notFound": ["0x…"] }`.
+Each quote is **independent** (its points coverage assumes only that market is the new stake).
+
+`**GET /markets/{conditionId}/position?wallet=0x…` — a wallet's existing position in one market
+(`hasPosition: false`, zeroed, when it holds none).
+
+```jsonc
+{
+  "hasPosition": true,
+  "shares": { "yes": "70000000", "no": "0" },
+  "value": "2100000",
+  "yield": {
+    "total": "19437",
+    "base": "0",
+    "guarantee": "19437",
+    "matching": "0",
+    "points": "0",
+  },
+  "positionApy": 6.95,
+}
+```
+
+`**GET /positions?wallet=0x…&category=all|active|resolved&page=1&pageSize=50**` — all of a wallet's
+positions (paginated, `pageSize` ≤ 100). Each entry has the same shape as the single-market
+`position` response, plus `question` / `slug` / `image` / `endDate` / `resolved` / `winningOutcome`.
+
+`**GET /contracts**` — the addresses from section 2: `{ chainId, vault, conditionalTokens, usdc, lens, twapOracle }`.
+
+### Where this fits the deposit/withdraw flows
+
+- `npm run deposit` / `deposit:push` index the markets (`POST /markets`), then print the projected
+APY before you submit — one **batch** `/quote` call for the whole deposit.
+- `npm run withdraw` lists positions with their live APY + accrued yield (`/positions`).
+- `npm run portfolio` is a standalone read of `/positions`; `npm run quote` indexes the picked markets
+(`POST /markets`), then makes two **batch** reads — `/markets` (headlines) + `/quote` (personalized).
+

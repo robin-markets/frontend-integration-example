@@ -23,9 +23,7 @@ import {
 import {
   ADDR,
   UNDERLYING_DECIMALS,
-  fetchQuestionIds,
-  fetchTwap,
-  fetchUserPositions,
+  confirm,
   pickManyFromList,
   promptAmount6dec,
   sortBatchByConditionId,
@@ -38,7 +36,14 @@ import {
   type Call,
 } from "./wallet.js";
 import { twapOracleAbi, conditionalTokensAbi } from "./abis.js";
-import { PushDepositRow } from "./types.js";
+import { fetchQuestionIds, fetchUserPositions } from "./polymarket-api.js";
+import {
+  ensureMarkets,
+  quoteStakeBatch,
+  fetchTwap,
+  fmtPct,
+} from "./robin-api.js";
+import { PushDepositRow, type MarketApy, type Quote } from "./types.js";
 
 async function main() {
   const eoa = account.address as Address;
@@ -46,10 +51,22 @@ async function main() {
   console.log(`EOA:    ${eoa}`);
   console.log(`Wallet: ${wallet.address} (${wallet.kind})`);
 
-  // 1. Pick positions.
+  // 1. Fetch positions, then load each market's live APY headline up front so the picker can show the
+  //    current min–max APY range while the user chooses. `ensureMarkets` indexes any markets Robin
+  //    doesn't know yet AND returns their headlines in the same response.
   const positions = await fetchUserPositions(wallet.address);
   if (positions.length === 0)
     throw new Error("No Polymarket positions found in proxy wallet.");
+
+  const allConditionIds = positions.map((p) => p.conditionId);
+  let marketById = new Map<`0x${string}`, MarketApy>();
+  try {
+    console.log("\nLoading market APYs…");
+    const { markets } = await ensureMarkets(allConditionIds);
+    marketById = new Map(markets.map((m) => [m.conditionId, m]));
+  } catch (e) {
+    console.log(`(APY data unavailable — ${(e as Error).message})`);
+  }
 
   const picked = await pickManyFromList(
     positions,
@@ -57,7 +74,13 @@ async function main() {
       const parts: string[] = [];
       if (p.yesSize > 0) parts.push(`${p.yesSize.toFixed(4)} YES`);
       if (p.noSize > 0) parts.push(`${p.noSize.toFixed(4)} NO`);
-      return `${parts.join(" + ")}  ${p.title}`;
+      const m = marketById.get(p.conditionId);
+      const range = !m
+        ? "not on Robin"
+        : m.resolved
+          ? "resolved"
+          : `APY ${fmtPct(m.apy.min)}–${fmtPct(m.apy.max)}`;
+      return `${range.padEnd(20)}  ${parts.join(" + ").padEnd(24)}  ${p.title}`;
     },
     'Pick markets to push-deposit (e.g. "1,3,5" or "all"): ',
   );
@@ -96,18 +119,70 @@ async function main() {
   }
   if (rows.length === 0) throw new Error("Nothing to push-deposit.");
 
-  console.log(`\nPush-depositing ${rows.length} market(s):`);
+  // 3. Review & confirm. Fetch a PERSONALIZED quote for the exact amounts entered (these markets
+  //    were already indexed above) and show, per market, the stake value, projected APY, and the
+  //    resulting earnings per month. NOTHING is staked until the user confirms this overview.
+  const titleById = new Map(picked.map((p) => [p.conditionId, p.title]));
+  let quoteById = new Map<`0x${string}`, Quote>();
+  try {
+    const { quotes } = await quoteStakeBatch({
+      wallet: wallet.address,
+      deposits: rows.map((r) => ({
+        conditionId: r.conditionId,
+        yesAmount: r.yesAmount,
+        noAmount: r.noAmount,
+      })),
+    });
+    quoteById = new Map(quotes.map((q) => [q.conditionId, q]));
+  } catch (e) {
+    console.log(`\n(Live quotes unavailable — ${(e as Error).message})`);
+  }
+
+  console.log(
+    `\n${"=".repeat(72)}\nReview push-deposit — ${rows.length} market(s)\n`,
+  );
+  let totalStake = 0;
+  let totalMonthly = 0;
   for (const r of rows) {
     const parts: string[] = [];
     if (r.yesAmount > 0n)
       parts.push(`${formatUnits(r.yesAmount, UNDERLYING_DECIMALS)} YES`);
     if (r.noAmount > 0n)
       parts.push(`${formatUnits(r.noAmount, UNDERLYING_DECIMALS)} NO`);
-    console.log(`  - ${parts.join(" + ")}  (${r.conditionId})`);
+    console.log(titleById.get(r.conditionId) ?? r.conditionId);
+    console.log(`  deposit ${parts.join(" + ")}`);
+
+    const q = quoteById.get(r.conditionId);
+    if (q) {
+      const stake = Number(
+        formatUnits(BigInt(q.stakeUsd), UNDERLYING_DECIMALS),
+      );
+      const monthly = (stake * q.projectedApy.total) / 100 / 12;
+      totalStake += stake;
+      totalMonthly += monthly;
+      console.log(
+        `  stake $${stake.toFixed(2)} · ${fmtPct(q.projectedApy.total)} APY ` +
+          `(base ${fmtPct(q.projectedApy.base)} + matching ${fmtPct(q.projectedApy.matching)} + points ${fmtPct(q.projectedApy.points)})`,
+      );
+      console.log(`  → earns ~$${monthly.toFixed(2)} / month`);
+    } else {
+      console.log("  quote unavailable (market not on Robin yet)");
+    }
+    console.log();
+  }
+  console.log(
+    `${"-".repeat(72)}\n` +
+      `Total stake $${totalStake.toFixed(2)} · projected earnings ` +
+      `~$${totalMonthly.toFixed(2)} / month (~$${(totalMonthly * 12).toFixed(2)} / year)\n`,
+  );
+
+  if (!(await confirm("Confirm and push-deposit these positions? [y/N]: "))) {
+    console.log("Aborted — nothing was staked.");
+    return;
   }
   console.log();
 
-  // 3. Sort strictly ascending by conditionId — REQUIRED, see shared.ts.
+  // 4. Sort strictly ascending by conditionId — REQUIRED, see shared.ts.
   //    Each conditionId appears at most once here (one per picked market), so no duplicates.
   const sortedRows = sortBatchByConditionId(rows);
   const conditionIds = sortedRows.map((r) => r.conditionId);
@@ -121,10 +196,10 @@ async function main() {
   );
   const referralCode = 0n;
 
-  // 4. Fetch questionIds (aligned with conditionIds) — encoded into `data` for the hook to decode.
+  // 5. Fetch questionIds (aligned with conditionIds) — encoded into `data` for the hook to decode.
   const questionIds = await fetchQuestionIds(conditionIds);
 
-  // 5. Build the dense, sorted (ids, values) arrays the way the vault will rebuild them
+  // 6. Build the dense, sorted (ids, values) arrays the way the vault will rebuild them
   //    internally. Order: for each market in ascending conditionId, YES (if yesAmount > 0) then
   //    NO (if noAmount > 0). Zero sides are skipped.
   const ids: bigint[] = [];
@@ -148,7 +223,7 @@ async function main() {
   if (BigInt(ids.length) !== nonZeroLength)
     throw new Error("ids[] length must equal nonZeroLength");
 
-  // 6. ABI-encode the deposit payload that the push-deposit hook will decode.
+  // 7. ABI-encode the deposit payload that the push-deposit hook will decode.
   //    Signature (from `PolymarketMixin._executePushDepositFromHook`):
   //      (bytes32[] conditionIds, bytes32[] questionIds, uint256[] yesAmounts,
   //       uint256[] noAmounts, uint256 nonZeroLength, uint256 referralCode)
@@ -171,10 +246,10 @@ async function main() {
     ],
   );
 
-  // 7. TWAP, same as the pull-deposit flow.
+  // 8. TWAP, same as the pull-deposit flow.
   const twap = await fetchTwap(conditionIds);
 
-  // 8. Encode the batch + ONE safeBatchTransferFrom call.
+  // 9. Encode the batch + ONE safeBatchTransferFrom call.
   const txs: Call[] = [];
 
   if (twap) {
@@ -199,8 +274,8 @@ async function main() {
     }),
   });
 
-  // 9. Execute AS the resolved wallet — Safe.execTransaction (safe) or the Polymarket relayer
-  //    (deposit-wallet). Push is the only deposit path DepositWallets can use.
+  // 10. Execute AS the resolved wallet — Safe.execTransaction (safe) or the Polymarket relayer
+  //     (deposit-wallet). Push is the only deposit path DepositWallets can use.
   const hash = await executeViaWallet(wallet, txs);
   console.log(`Submitted: ${hash}`);
 

@@ -17,9 +17,7 @@ import {
 import {
   ADDR,
   UNDERLYING_DECIMALS,
-  fetchQuestionIds,
-  fetchTwap,
-  fetchUserPositions,
+  confirm,
   pickManyFromList,
   promptAmount6dec,
   sortBatchByConditionId,
@@ -36,7 +34,14 @@ import {
   conditionalTokensAbi,
   stakingVaultAbi,
 } from "./abis.js";
-import { DepositRow } from "./types.js";
+import { fetchQuestionIds, fetchUserPositions } from "./polymarket-api.js";
+import {
+  ensureMarkets,
+  quoteStakeBatch,
+  fetchTwap,
+  fmtPct,
+} from "./robin-api.js";
+import { DepositRow, type MarketApy, type Quote } from "./types.js";
 
 async function main() {
   const eoa = account.address as Address;
@@ -49,10 +54,22 @@ async function main() {
     );
   }
 
-  // 1. Fetch positions and let the user pick any number of them.
+  // 1. Fetch the user's Polymarket positions, then load each market's live APY headline up front so
+  //    the picker can show the current min–max APY range while the user chooses. `ensureMarkets`
+  //    indexes any markets Robin doesn't know yet.
   const positions = await fetchUserPositions(wallet.address);
   if (positions.length === 0)
     throw new Error("No Polymarket positions found in proxy wallet.");
+
+  const allConditionIds = positions.map((p) => p.conditionId);
+  let marketById = new Map<`0x${string}`, MarketApy>();
+  try {
+    console.log("\nLoading market APYs…");
+    const { markets } = await ensureMarkets(allConditionIds);
+    marketById = new Map(markets.map((m) => [m.conditionId, m]));
+  } catch (e) {
+    console.log(`(APY data unavailable — ${(e as Error).message})`);
+  }
 
   const picked = await pickManyFromList(
     positions,
@@ -60,7 +77,13 @@ async function main() {
       const parts: string[] = [];
       if (p.yesSize > 0) parts.push(`${p.yesSize.toFixed(4)} YES`);
       if (p.noSize > 0) parts.push(`${p.noSize.toFixed(4)} NO`);
-      return `${parts.join(" + ")}  ${p.title}`;
+      const m = marketById.get(p.conditionId);
+      const range = !m
+        ? "not on Robin"
+        : m.resolved
+          ? "resolved"
+          : `APY ${fmtPct(m.apy.min)}–${fmtPct(m.apy.max)}`;
+      return `${range.padEnd(20)}  ${parts.join(" + ").padEnd(24)}  ${p.title}`;
     },
     'Pick markets to deposit (e.g. "1,3,5" or "all"): ',
   );
@@ -91,18 +114,70 @@ async function main() {
   }
   if (rows.length === 0) throw new Error("Nothing to deposit.");
 
-  console.log(`\nDepositing ${rows.length} market(s):`);
+  // 3. Review & confirm. Fetch a PERSONALIZED quote for the exact amounts entered (these markets
+  //    were already indexed above) and show, per market, the stake value, projected APY, and the
+  //    resulting earnings per month. NOTHING is staked until the user confirms this overview.
+  const titleById = new Map(picked.map((p) => [p.conditionId, p.title]));
+  let quoteById = new Map<`0x${string}`, Quote>();
+  try {
+    const { quotes } = await quoteStakeBatch({
+      wallet: wallet.address,
+      deposits: rows.map((r) => ({
+        conditionId: r.conditionId,
+        yesAmount: r.yesAmount,
+        noAmount: r.noAmount,
+      })),
+    });
+    quoteById = new Map(quotes.map((q) => [q.conditionId, q]));
+  } catch (e) {
+    console.log(`\n(Live quotes unavailable — ${(e as Error).message})`);
+  }
+
+  console.log(
+    `\n${"=".repeat(72)}\nReview deposit — ${rows.length} market(s)\n`,
+  );
+  let totalStake = 0;
+  let totalMonthly = 0;
   for (const r of rows) {
     const parts: string[] = [];
     if (r.yesAmount > 0n)
       parts.push(`${formatUnits(r.yesAmount, UNDERLYING_DECIMALS)} YES`);
     if (r.noAmount > 0n)
       parts.push(`${formatUnits(r.noAmount, UNDERLYING_DECIMALS)} NO`);
-    console.log(`  - ${parts.join(" + ")}  (${r.conditionId})`);
+    console.log(titleById.get(r.conditionId) ?? r.conditionId);
+    console.log(`  deposit ${parts.join(" + ")}`);
+
+    const q = quoteById.get(r.conditionId);
+    if (q) {
+      const stake = Number(
+        formatUnits(BigInt(q.stakeUsd), UNDERLYING_DECIMALS),
+      );
+      const monthly = (stake * q.projectedApy.total) / 100 / 12;
+      totalStake += stake;
+      totalMonthly += monthly;
+      console.log(
+        `  stake $${stake.toFixed(2)} · ${fmtPct(q.projectedApy.total)} APY ` +
+          `(base ${fmtPct(q.projectedApy.base)} + matching ${fmtPct(q.projectedApy.matching)} + points ${fmtPct(q.projectedApy.points)})`,
+      );
+      console.log(`  → earns ~$${monthly.toFixed(2)} / month`);
+    } else {
+      console.log("  quote unavailable (market not on Robin yet)");
+    }
+    console.log();
+  }
+  console.log(
+    `${"-".repeat(72)}\n` +
+      `Total stake $${totalStake.toFixed(2)} · projected earnings ` +
+      `~$${totalMonthly.toFixed(2)} / month (~$${(totalMonthly * 12).toFixed(2)} / year)\n`,
+  );
+
+  if (!(await confirm("Confirm and stake these positions? [y/N]: "))) {
+    console.log("Aborted — nothing was staked.");
+    return;
   }
   console.log();
 
-  // 3. Sort strictly ascending by conditionId. REQUIRED — see shared.ts.
+  // 4. Sort strictly ascending by conditionId. REQUIRED — see shared.ts.
   //    Each conditionId appears at most once here (one per picked market), so no duplicates.
   const sortedRows = sortBatchByConditionId(rows);
   const conditionIds = sortedRows.map((r) => r.conditionId);
@@ -121,10 +196,10 @@ async function main() {
   // still be aligned and the same length). Sourced from Polymarket Gamma's `questionID` field.
   const questionIds = await fetchQuestionIds(conditionIds);
 
-  // 4. Fetch TWAP. May return null if not needed.
+  // 5. Fetch TWAP. May return null if not needed.
   const twap = await fetchTwap(conditionIds);
 
-  // 5. Encode the Safe batch.
+  // 6. Encode the Safe batch.
   const txs: Call[] = [];
 
   if (twap) {
@@ -176,7 +251,7 @@ async function main() {
     }),
   });
 
-  // 6. Execute via the Safe (pull deposit is Safe-only).
+  // 7. Execute via the Safe (pull deposit is Safe-only).
   const hash = await executeViaWallet(wallet, txs);
   console.log(`Submitted: ${hash}`);
 

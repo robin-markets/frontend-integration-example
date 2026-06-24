@@ -7,8 +7,6 @@ import { encodeFunctionData, formatUnits, type Address } from "viem";
 import {
   ADDR,
   UNDERLYING_DECIMALS,
-  fetchDepositedPositions,
-  fetchTwap,
   pickManyFromList,
   promptAmount6dec,
   sortBatchByConditionId,
@@ -21,6 +19,7 @@ import {
   type Call,
 } from "./wallet.js";
 import { twapOracleAbi, stakingVaultAbi } from "./abis.js";
+import { getPositions, fmtPct, fetchTwap } from "./robin-api.js";
 import { WithdrawRow } from "./types.js";
 
 async function main() {
@@ -29,19 +28,28 @@ async function main() {
   console.log(`EOA:    ${eoa}`);
   console.log(`Wallet: ${wallet.address} (${wallet.kind})`);
 
-  // 1. Fetch deposited positions from Robin's indexer API.
-  const deposited = await fetchDepositedPositions(wallet.address);
-  if (deposited.length === 0)
+  // 1. Fetch deposited positions from the Robin Integration API — this also gives each position's
+  //    live APY and accrued (not-yet-claimed) yield, which we surface in the picker below.
+  const robinPositions = await getPositions(wallet.address, { category: "active" });
+  if (robinPositions.length === 0)
     throw new Error("No deposited positions to withdraw.");
+  const deposited = robinPositions.map((p) => ({
+    conditionId: p.conditionId,
+    question: p.question,
+    yesShares: BigInt(p.shares.yes),
+    noShares: BigInt(p.shares.no),
+    value: BigInt(p.value),
+    apy: p.positionApy,
+    earned: BigInt(p.yield.total),
+  }));
 
   // 2. Multi-select picker.
   const fmt = (v: bigint) => formatUnits(v, UNDERLYING_DECIMALS);
   const picked = await pickManyFromList(
     deposited,
     (p) =>
-      `${fmt(p.positionTvl).padStart(8)} USD  ` +
-      `${fmt(p.yesShares)} YES + ${fmt(p.noShares)} NO  ` +
-      `${p.question}`,
+      `${fmt(p.value).padStart(8)} USD  +$${fmt(p.earned)} earned  ${fmtPct(p.apy)} APY  ` +
+      `${fmt(p.yesShares)} YES + ${fmt(p.noShares)} NO  ${p.question}`,
     'Pick positions to withdraw (e.g. "1,3,5" or "all"): ',
   );
 

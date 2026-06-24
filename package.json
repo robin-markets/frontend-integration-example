@@ -3,6 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "quote": "tsx src/quote.ts",
+    "portfolio": "tsx src/portfolio.ts",
     "deposit": "tsx src/deposit.ts",
     "deposit:push": "tsx src/deposit-push.ts",
     "withdraw": "tsx src/withdraw.ts"
