@@ -38,6 +38,7 @@ import { fetchQuestionIds, fetchUserPositions } from "./polymarket-api.js";
 import {
   ensureMarkets,
   quoteStakeBatch,
+  checkCapacity,
   fetchTwap,
   fmtPct,
 } from "./robin-api.js";
@@ -170,6 +171,24 @@ async function main() {
       `Total stake $${totalStake.toFixed(2)} · projected earnings ` +
       `~$${totalMonthly.toFixed(2)} / month (~$${(totalMonthly * 12).toFixed(2)} / year)\n`,
   );
+
+  // Capacity pre-flight — the vault has a finite, two-tier deposit capacity (global, not per-market).
+  // An over-capacity deposit reverts on-chain, so check the WHOLE batch before staking.
+  try {
+    const cap = await checkCapacity(rows);
+    const remaining = cap.remainingUsdc
+      ? `~$${Number(formatUnits(BigInt(cap.remainingUsdc), UNDERLYING_DECIMALS)).toFixed(2)} remaining`
+      : "uncapped";
+    if (!cap.fits) {
+      console.log(
+        `Vault capacity: this deposit would EXCEED capacity (${remaining}) — it would revert on-chain. Aborting.\n`,
+      );
+      return;
+    }
+    console.log(`Vault capacity: fits ✓ (${remaining})\n`);
+  } catch (e) {
+    console.log(`(Capacity check unavailable — ${(e as Error).message})\n`);
+  }
 
   if (!(await confirm("Confirm and stake these positions? [y/N]: "))) {
     console.log("Aborted — nothing was staked.");

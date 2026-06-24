@@ -20,6 +20,7 @@ import type {
   Quote,
   StakeQuote,
   QuoteDeposit,
+  Capacity,
   RobinPosition,
   SinglePosition,
   RobinContracts,
@@ -176,6 +177,25 @@ export async function quoteStakeBatch(params: {
     notFound.push(...page.notFound);
   }
   return { wallet: params.wallet, quotes, notFound };
+}
+
+// ============ Deposit capacity (GET /api/v1/capacity) ============
+//
+// The vault has a finite, TWO-TIER deposit capacity (tier 1: a forward-looking guard on worst-case
+// pairing vs vault caps; tier 2: live ERC-4626 headroom). It's GLOBAL (vault-wide), not per-market —
+// an over-capacity deposit reverts on-chain, so pre-flight the WHOLE batch in ONE call (don't chunk:
+// two halves that each fit can exceed capacity together). Mirrors RobinLens.checkBatchDepositCapacity.
+export async function checkCapacity(deposits: QuoteDeposit[]): Promise<Capacity> {
+  if (deposits.length > MAX_BATCH)
+    throw new Error(
+      `Capacity check supports at most ${MAX_BATCH} markets per batch (got ${deposits.length}).`,
+    );
+  const q = new URLSearchParams({
+    conditionIds: deposits.map((d) => d.conditionId).join(","),
+    yesAmounts: deposits.map((d) => (d.yesAmount ?? 0n).toString()).join(","),
+    noAmounts: deposits.map((d) => (d.noAmount ?? 0n).toString()).join(","),
+  });
+  return getJson<Capacity>(`${V1}/capacity?${q.toString()}`);
 }
 
 // ============ A wallet's positions ============

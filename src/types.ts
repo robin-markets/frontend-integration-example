@@ -109,6 +109,12 @@ export type QuoteDeposit = {
   noAmount?: bigint;
 };
 
+/** Vault deposit capacity (global, vault-wide). `remainingUsdc` is a 6-dec USDC string; null = uncapped. */
+export type Capacity = {
+  fits: boolean; // would the supplied batch deposit without reverting
+  remainingUsdc: string | null; // USDC the vault can still absorb; null = uncapped
+};
+
 export type RobinYield = {
   total: string;
   base: string;
