@@ -184,7 +184,10 @@ export async function quoteStakeBatch(params: {
 // The vault has a finite, TWO-TIER deposit capacity (tier 1: a forward-looking guard on worst-case
 // pairing vs vault caps; tier 2: live ERC-4626 headroom). It's GLOBAL (vault-wide), not per-market —
 // an over-capacity deposit reverts on-chain, so pre-flight the WHOLE batch in ONE call (don't chunk:
-// two halves that each fit can exceed capacity together). Mirrors RobinLens.checkBatchDepositCapacity.
+// two halves that each fit can exceed capacity together). Mirrors RobinLens.getDepositCapacity.
+// When it doesn't fit, `binding` names the blocking tier, `shortfallUsdc` says by how much, and
+// `markets[]` shows per market whether its tokens pair (matched → yield-vault capacity) or add
+// unmatched surplus (→ internal capacity), plus which side would match instead.
 export async function checkCapacity(deposits: QuoteDeposit[]): Promise<Capacity> {
   if (deposits.length > MAX_BATCH)
     throw new Error(

@@ -176,13 +176,25 @@ async function main() {
   // An over-capacity deposit reverts on-chain, so check the WHOLE batch before staking.
   try {
     const cap = await checkCapacity(rows);
-    const remaining = cap.remainingUsdc
-      ? `~$${Number(formatUnits(BigInt(cap.remainingUsdc), UNDERLYING_DECIMALS)).toFixed(2)} remaining`
-      : "uncapped";
+    const fmtUsd = (v: string) => Number(formatUnits(BigInt(v), UNDERLYING_DECIMALS)).toFixed(2);
+    const remaining = cap.remainingUsdc ? `~$${fmtUsd(cap.remainingUsdc)} remaining` : "uncapped";
     if (!cap.fits) {
+      const tier = cap.binding === "internal" ? "unmatched-token" : "yield-vault";
       console.log(
-        `Vault capacity: this deposit would EXCEED capacity (${remaining}) — it would revert on-chain. Aborting.\n`,
+        `Vault capacity: exceeded by $${fmtUsd(cap.shortfallUsdc)} — the vault's ${tier} capacity is the limit. Aborting.`,
       );
+      for (const m of cap.markets) {
+        if (!m.blocking) continue;
+        const title = titleById.get(m.conditionId) ?? m.conditionId;
+        const matchLabel = m.matchingSide === "yes" ? "YES" : m.matchingSide === "no" ? "NO" : null;
+        const over = m.overSide ? `${m.overSide.toUpperCase()} over limit — ` : "";
+        console.log(
+          m.blocking === "unmatched"
+            ? `  • ${title}: ${over}adds $${fmtUsd(m.unmatchedUsdc)} unmatched — reduce to fit${matchLabel ? ` (staking ${matchLabel} pairs instead, but needs yield-vault room)` : ""}`
+            : `  • ${title}: ${over}$${fmtUsd(m.matchedUsdc)} would match, but the yield vault is nearly full — reduce to fit`,
+        );
+      }
+      console.log();
       return;
     }
     console.log(`Vault capacity: fits ✓ (${remaining})\n`);

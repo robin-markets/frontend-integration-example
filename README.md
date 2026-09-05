@@ -46,16 +46,14 @@ All four/two calls run atomically inside a single `Safe.execTransaction` via Mul
 
 ## 2. Contract addresses (Polygon mainnet)
 
-
 | Name                 | Address                                                       |
 | -------------------- | ------------------------------------------------------------- |
 | `SAFE_PROXY_FACTORY` | `0xaacFeEa03eb1561C4e67d661e40682Bd20E3541b`                  |
 | `STAKING_VAULT`      | `0xcb7444981296D08dA7161B75378e3773DbF5D806` (proxy)          |
 | `TWAP_ORACLE`        | `0xf08a02deeB4C7A09fAc8e8C6f8508D724612796f` (proxy)          |
-| `ROBIN_LENS`         | `0xDbB59819C5a4d28374a162e375Ce4595c8650dDC`                  |
+| `ROBIN_LENS`         | `0x39f711f78A3Bb3633759C0df50E1412e21ADb825`                  |
 | `CONDITIONAL_TOKENS` | `0x4D97DCd97eC945f40cF65F87097ACe5EA0476045` (Polymarket CTF) |
 | `USDCE`              | `0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174`                  |
-
 
 > These are also available programmatically: `GET https://app.robin.markets/api/v1/contracts` →
 > `{ chainId, vault, conditionalTokens, usdc, lens, twapOracle }`. See section 12.
@@ -99,12 +97,10 @@ if (code && code !== "0x") {
 
 **Which path each wallet uses for transactions:**
 
-
 | Wallet        | Deposit flow                                       | Transport                                                                                             |
 | ------------- | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
 | Safe proxy    | pull (`approve` → `batchDeposit` → revoke) or push | `Safe.execTransaction` — see `[deposit.ts](./src/deposit.ts)` / `[withdraw.ts](./src/withdraw.ts)`    |
 | DepositWallet | **push only** — the relayer blocks `approve`       | Polymarket relayer `executeDepositWalletBatch` — see §10 + `[deposit-push.ts](./src/deposit-push.ts)` |
-
 
 Withdraw is a single `batchWithdraw` for both wallet kinds; only the transport differs.
 
@@ -253,21 +249,21 @@ function batchDeposit(
 Rules:
 
 - **Sorted batch (REQUIRED).** `conditionIds` must be sorted strictly ascending (by `bytes32`
-numeric value). Duplicates revert with `UnsortedConditionIds`. The other arrays must use the
-same permutation. This is how the vault detects duplicate-market attacks in O(n) - sort
-off-chain and you're safe. See `sortBatchByConditionId` in `[shared.ts](./src/shared.ts)`.
+  numeric value). Duplicates revert with `UnsortedConditionIds`. The other arrays must use the
+  same permutation. This is how the vault detects duplicate-market attacks in O(n) - sort
+  off-chain and you're safe. See `sortBatchByConditionId` in `[shared.ts](./src/shared.ts)`.
 - `**questionIds` must be aligned with `conditionIds`. It's only used to auto-initialise a market
-on its first ever deposit (the vault verifies `conditionId == keccak256(oracle, questionId, 2)`);
-for already-initialised markets the value is ignored, but the array must still be present, aligned,
-and the same length. Source it from Polymarket Gamma's `questionID` field - see `fetchQuestionIds`
-in `[shared.ts](./src/shared.ts)`.
+  on its first ever deposit (the vault verifies `conditionId == keccak256(oracle, questionId, 2)`);
+  for already-initialised markets the value is ignored, but the array must still be present, aligned,
+  and the same length. Source it from Polymarket Gamma's `questionID` field - see `fetchQuestionIds`
+  in `[shared.ts](./src/shared.ts)`.
 - If your selection covers both YES and NO of the same `conditionId`, **merge them into one row**
-(one `yesAmounts[i]`, one `noAmounts[i]`) before sorting. Two rows with the same conditionId
-will revert.
+  (one `yesAmounts[i]`, one `noAmounts[i]`) before sorting. Two rows with the same conditionId
+  will revert.
 - For every `i`, at least one of `yesAmounts[i] / noAmounts[i]` must be non-zero.
 - `nonZeroLength` must equal the actual count, otherwise the vault reverts.
 - The vault transfers tokens from the Safe (msg.sender), which is why you must approve the vault
-on `ConditionalTokens` first.
+  on `ConditionalTokens` first.
 
 ---
 
@@ -368,7 +364,7 @@ way it does, or you'll hit `PushDepositMismatch`:
 
 - Iterate `sortedRows` in ascending conditionId order.
 - For each row: if `yesAmount > 0`, push the market's YES positionId then yesAmount. Then if
-`noAmount > 0`, push the NO positionId then noAmount.
+  `noAmount > 0`, push the NO positionId then noAmount.
 - Skip zero sides entirely (they must NOT appear in `ids`/`values`).
 
 The YES/NO position ids are the on-chain ERC-1155 token ids. Polymarket's `/positions` data API
@@ -408,12 +404,12 @@ ConditionalTokens.safeBatchTransferFrom(safe, vault, ids, values, depositData);
 **Failure modes specific to push-deposit**
 
 - `PushDepositMismatch` — your `(ids, values)` doesn't equal what the declared payload implies.
-Most common causes: wrong YES/NO ordering, included a zero-amount side, mixed up
-YES/NO positionIds for a neg-risk market.
+  Most common causes: wrong YES/NO ordering, included a zero-amount side, mixed up
+  YES/NO positionIds for a neg-risk market.
 - `UnsolicitedTransfer` — the inbound transfer isn't from the CTF (i.e. you're trying to push
-some other ERC-1155 to the vault), or your `data` didn't decode as the deposit payload.
+  some other ERC-1155 to the vault), or your `data` didn't decode as the deposit payload.
 - Any other deposit revert (`UnsortedConditionIds`, `ZeroAmount`, `LengthMismatch`, …) — same as
-the pull-deposit path; the CTF transfer is rolled back.
+  the pull-deposit path; the CTF transfer is rolled back.
 
 ---
 
@@ -451,7 +447,7 @@ existing positions (shares, value, accrued-yield breakdown, live APY).
 - **Auth:** none; CORS is open (`*`), so you can call it directly from the browser.
 - **Rate limit:** per-IP — back off on `429`.
 - **Units:** token/USD amounts are 6-decimal integer strings (`"1500000"` = 1.5); APY values are
-numbers in **percent** (`6.0` = 6.00%).
+  numbers in **percent** (`6.0` = 6.00%).
 - `**wallet` is the user's resolved Robin wallet (DepositWallet or Safe — section 3), not the EOA.
 
 Typed client + runnable examples: `[robin-api.ts](./src/robin-api.ts)`, `npm run quote`
@@ -468,11 +464,11 @@ total = max(nativeApy × matchedFraction, guaranteeFloor)   // socialized base, 
 ```
 
 - **Base** — native (Yearn) yield is socialized across the market by TVL, so only the matched
-fraction earns it; a guarantee floors the result.
+  fraction earns it; a guarantee floors the result.
 - **Matching** — +1% APY for the minority side (the side that balances the YES/NO pool), scaled by
-how much of a deposit is actually matchable.
+  how much of a deposit is actually matchable.
 - **Points** — a personalized boost from the wallet's Robin Points balance. You never handle points
-directly: they appear as the `points` line inside the quote/position APY and are folded into the total.
+  directly: they appear as the `points` line inside the quote/position APY and are folded into the total.
 
 ### Endpoints
 
@@ -573,8 +569,7 @@ positions (paginated, `pageSize` ≤ 100). Each entry has the same shape as the 
 ### Where this fits the deposit/withdraw flows
 
 - `npm run deposit` / `deposit:push` index the markets (`POST /markets`), then print the projected
-APY before you submit — one **batch** `/quote` call for the whole deposit.
+  APY before you submit — one **batch** `/quote` call for the whole deposit.
 - `npm run withdraw` lists positions with their live APY + accrued yield (`/positions`).
 - `npm run portfolio` is a standalone read of `/positions`; `npm run quote` indexes the picked markets
-(`POST /markets`), then makes two **batch** reads — `/markets` (headlines) + `/quote` (personalized).
-
+  (`POST /markets`), then makes two **batch** reads — `/markets` (headlines) + `/quote` (personalized).

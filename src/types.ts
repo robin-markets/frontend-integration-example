@@ -109,10 +109,20 @@ export type QuoteDeposit = {
   noAmount?: bigint;
 };
 
-/** Vault deposit capacity (global, vault-wide). `remainingUsdc` is a 6-dec USDC string; null = uncapped. */
+/** Vault deposit capacity (global, vault-wide). USDC figures are 6-dec strings; `remainingUsdc` null = uncapped. */
 export type Capacity = {
   fits: boolean; // would the supplied batch deposit without reverting
   remainingUsdc: string | null; // USDC the vault can still absorb; null = uncapped
+  binding: "internal" | "external" | null; // which tier blocks the batch; null when it fits
+  shortfallUsdc: string; // USDC the batch overshoots the binding tier by; "0" when it fits
+  markets: Array<{
+    conditionId: `0x${string}`;
+    matchedUsdc: string; // pairs against the pool now → consumes matched (external) capacity
+    unmatchedUsdc: string; // raises the vault's worst-case pairing exposure → consumes internal capacity
+    matchingSide: "yes" | "no" | null; // the side that would pair here; null when balanced
+    blocking: "unmatched" | "matched" | null; // lands in the tier that blocks the batch
+    overSide: "yes" | "no" | null; // the side to reduce; null when this market isn't blocking
+  }>;
 };
 
 export type RobinYield = {
