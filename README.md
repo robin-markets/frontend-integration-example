@@ -463,7 +463,7 @@ total = max(nativeApy × matchedFraction, guaranteeFloor)   // socialized base, 
       + pointsBoost                                          // personalized Robin Points boost
 ```
 
-- **Base** — native (Yearn) yield is socialized across the market by TVL, so only the matched
+- **Base** — native yield is socialized across the market by TVL, so only the matched
   fraction earns it; a guarantee floors the result.
 - **Matching** — +1% APY for the minority side (the side that balances the YES/NO pool), scaled by
   how much of a deposit is actually matchable.
@@ -495,7 +495,7 @@ in Robin's set.
     "min": 6.4,
     "max": 8.4, // worst / best a staker could earn now (base … base+matching+points)
     "maxPointsBoost": 1.0, // "up to +1%" ceiling
-    "nativeApy": 5.1, // raw Yearn netAPY, null if temporarily unavailable
+    "nativeApy": 5.1, // netAPY, null if temporarily unavailable
   },
   "vault": "0x…",
 }

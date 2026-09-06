@@ -81,7 +81,7 @@ export type MarketApy = {
     min: number; // lowest a staker could earn now (= base; majority side, no points)
     max: number; // highest a staker could earn now (base + best-side matching + full points boost)
     maxPointsBoost: number; // "up to +X%" ceiling
-    nativeApy: number | null; // raw Yearn netAPY, null if temporarily unavailable
+    nativeApy: number | null; // netAPY, null if temporarily unavailable
   };
   vault: `0x${string}`;
 };
