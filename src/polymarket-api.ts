@@ -50,7 +50,9 @@ export async function fetchTokenProtocolVersions(
   const versions = new Map<string, "v1" | "v2">();
   const unique = [...new Set(tokenIds)];
   for (let i = 0; i < unique.length; i += 50) {
-    const q = new URLSearchParams({ token_id: unique.slice(i, i + 50).join(",") });
+    const q = new URLSearchParams({
+      token_id: unique.slice(i, i + 50).join(","),
+    });
     const res = await fetch(`${POLYMARKET_DATA}/tokens?${q.toString()}`);
     if (!res.ok)
       throw new Error(`Polymarket token lookup failed: ${res.status}`);
@@ -119,10 +121,32 @@ export async function fetchUserPositions(
     cursor = page.pagination.next_cursor;
   } while (cursor);
 
-  const versions = await fetchTokenProtocolVersions([...heldTokenByCid.values()]);
+  const versions = await fetchTokenProtocolVersions([
+    ...heldTokenByCid.values(),
+  ]);
   for (const [cid, tokenId] of heldTokenByCid)
     byCid.get(cid)!.protocolVersion = versions.get(tokenId) ?? null;
   return Array.from(byCid.values());
+}
+
+type GammaMarketIds = { conditionId: `0x${string}`; questionID: `0x${string}` };
+
+// `/markets/keyset` only returns open markets unless `closed=true` is passed, and there is no way
+// to ask for both in one query — so every lookup fires both and merges them.
+async function fetchGammaMarkets(
+  conditionIds: `0x${string}`[],
+  closed?: boolean,
+): Promise<GammaMarketIds[]> {
+  const qs = conditionIds
+    .map((id) => `condition_ids=${encodeURIComponent(id)}`)
+    .join("&");
+  const closedParam = closed === undefined ? "" : `&closed=${closed}`;
+  const res = await fetch(
+    `${POLYMARKET_GAMMA}/markets/keyset?${qs}&limit=100${closedParam}`,
+  );
+  if (!res.ok)
+    throw new Error(`Polymarket questionIds fetch failed: ${res.status}`);
+  return ((await res.json()) as { markets: GammaMarketIds[] }).markets;
 }
 
 // Polymarket questionIds for `batchDeposit`, returned aligned 1:1 with `conditionIds` (used for
@@ -131,17 +155,13 @@ export async function fetchQuestionIds(
   conditionIds: `0x${string}`[],
 ): Promise<`0x${string}`[]> {
   if (conditionIds.length === 0) return [];
-  const qs = conditionIds
-    .map((id) => `condition_ids=${encodeURIComponent(id)}`)
-    .join("&");
-  const url = `${POLYMARKET_GAMMA}/markets/keyset?${qs}&limit=100`;
-  const res = await fetch(url);
-  if (!res.ok)
-    throw new Error(`Polymarket questionIds fetch failed: ${res.status}`);
-  const data = (await res.json()) as {
-    markets: Array<{ conditionId: `0x${string}`; questionID: `0x${string}` }>;
-  };
-  const byCid = new Map(data.markets.map((m) => [m.conditionId, m.questionID]));
+  const [open, closed] = await Promise.all([
+    fetchGammaMarkets(conditionIds),
+    fetchGammaMarkets(conditionIds, true),
+  ]);
+  const byCid = new Map(
+    [...open, ...closed].map((m) => [m.conditionId, m.questionID]),
+  );
   return conditionIds.map((cid) => {
     const q = byCid.get(cid);
     if (!q) throw new Error(`No questionId for ${cid}`);
