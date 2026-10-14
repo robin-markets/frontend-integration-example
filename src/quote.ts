@@ -40,7 +40,8 @@ async function main() {
       const parts: string[] = [];
       if (p.yesSize > 0) parts.push(`${p.yesSize.toFixed(2)} YES`);
       if (p.noSize > 0) parts.push(`${p.noSize.toFixed(2)} NO`);
-      return `${parts.join(" + ")}  ${p.title}`;
+      const tag = p.protocolVersion === "v1" ? "" : "  [Polymarket V2 — not supported]";
+      return `${parts.join(" + ")}  ${p.title}${tag}`;
     },
     'Pick markets to quote (e.g. "1,3" or "all"): ',
   );
@@ -49,15 +50,21 @@ async function main() {
 
   // 1) Index any picked markets Robin doesn't know yet AND read their headlines in ONE call:
   //    POST /markets indexes (the one mutating call) then returns the same data as GET /markets.
-  const { markets } = await ensureMarkets(conditionIds);
+  const { markets, unsupported } = await ensureMarkets(conditionIds);
   const marketById = new Map(markets.map((m) => [m.conditionId, m]));
+  // Polymarket Protocol V2 markets can be listed but never quoted or staked on this vault.
+  const unsupportedIds = new Set<`0x${string}`>([
+    ...unsupported,
+    ...picked.filter((p) => p.protocolVersion !== "v1").map((p) => p.conditionId),
+  ]);
 
   // 2) One batch call for the personalized quotes — only for markets live on Robin (skip
-  //    not-found). Each quote is independent: its points coverage assumes only that market is staked.
+  //    not-found and unsupported). Each quote is independent: its points coverage assumes only that
+  //    market is staked.
   const deposits: QuoteDeposit[] = [];
   for (const p of picked) {
     const m = marketById.get(p.conditionId);
-    if (m)
+    if (m && !unsupportedIds.has(p.conditionId))
       deposits.push({
         conditionId: p.conditionId,
         yesAmount: toAmount(p.yesSize),
@@ -73,6 +80,10 @@ async function main() {
   for (const p of picked) {
     console.log(`\n${"=".repeat(72)}\n${p.title}\n${p.conditionId}`);
 
+    if (unsupportedIds.has(p.conditionId)) {
+      console.log("  Runs on Polymarket Protocol V2 — not supported on this vault.");
+      continue;
+    }
     const market = marketById.get(p.conditionId);
     if (!market) {
       console.log("  Not available on Robin yet.");

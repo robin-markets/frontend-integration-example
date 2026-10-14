@@ -15,8 +15,8 @@ export type TwapPayload = { markets: TwapMarket[]; signature: `0x${string}` };
 // One row per market. `fetchUserPositions` merges Polymarket's per-side records (one per
 // (conditionId, outcome)) into a single per-market row. `yesSize` / `noSize` are 0 if the user
 // doesn't hold that side. `yesPositionId` / `noPositionId` are the on-chain ERC-1155 token ids
-// and are always populated regardless of which side(s) the user holds — Polymarket's response
-// includes both `asset` and `oppositeAsset`, so we can fill the unheld side too.
+// and are always populated regardless of which side(s) the user holds — Polymarket's Data API v2
+// response includes both `token_id` and `opposite_token_id`, so we can fill the unheld side too.
 export type PolymarketPosition = {
   conditionId: `0x${string}`;
   title: string;
@@ -24,7 +24,14 @@ export type PolymarketPosition = {
   noSize: number;
   yesPositionId: bigint;
   noPositionId: bigint;
+  // Which ledger issued the tokens: "v1" = Conditional Tokens (the only kind the vault can take),
+  // "v2" = Polymarket Protocol V2 (PositionManager — depositing would revert), null = the token
+  // lookup did not know the token (treat as not stakeable). Show these, never deposit them.
+  protocolVersion: "v1" | "v2" | null;
 };
+
+/** Markets Robin cannot stake because they run on Polymarket Protocol V2 — mirrored from the Integration API. */
+export type UnsupportedIds = `0x${string}`[];
 export type DepositRow = {
   conditionId: `0x${string}`;
   yesAmount: bigint;

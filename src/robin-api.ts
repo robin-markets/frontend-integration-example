@@ -26,6 +26,7 @@ import type {
   RobinContracts,
   TwapMarket,
   TwapPayload,
+  UnsupportedIds,
 } from "./types.js";
 
 // Base URL for Robin's API. The v1 Integration API (markets, quotes, positions, TWAP) lives at
@@ -80,41 +81,47 @@ export async function getMarketApy(
 
 /**
  * Batch market headlines. De-duplicates and chunks into calls of 25 (the API max) and merges the
- * results, so you can pass any number of ids. Unknown ids come back in `notFound`.
+ * results, so you can pass any number of ids. Unknown ids come back in `notFound`; markets Robin
+ * knows but cannot stake (Polymarket Protocol V2) in `unsupported`.
  */
 export async function getMarkets(
   conditionIds: `0x${string}`[],
-): Promise<{ markets: MarketApy[]; notFound: `0x${string}`[] }> {
+): Promise<{ markets: MarketApy[]; notFound: `0x${string}`[]; unsupported: UnsupportedIds }> {
   const markets: MarketApy[] = [];
   const notFound: `0x${string}`[] = [];
+  const unsupported: UnsupportedIds = [];
   for (const ids of chunk([...new Set(conditionIds)], MAX_BATCH)) {
     const q = new URLSearchParams({ conditionIds: ids.join(",") });
     const page = await getJson<{
       markets: MarketApy[];
       notFound: `0x${string}`[];
+      unsupported?: UnsupportedIds; // absent on API builds that predate Polymarket Protocol V2 support
     }>(`${V1}/markets?${q.toString()}`);
     markets.push(...page.markets);
     notFound.push(...page.notFound);
+    unsupported.push(...(page.unsupported ?? []));
   }
-  return { markets, notFound };
+  return { markets, notFound, unsupported };
 }
 
 /**
  * Index markets on Robin — the ONLY mutating call (everything else is read-only). Fetches any
  * conditionIds Robin doesn't know yet from Polymarket and upserts them, then returns the SAME shape
- * as `getMarkets` (`{ markets, notFound }`) so the result is directly usable — no follow-up read.
- * Call this for markets that might not be on Robin yet. De-dupes and chunks into calls of 25 (the
- * API max) and merges.
+ * as `getMarkets` (`{ markets, notFound, unsupported }`) so the result is directly usable — no
+ * follow-up read. Call this for markets that might not be on Robin yet. De-dupes and chunks into
+ * calls of 25 (the API max) and merges.
  */
 export async function ensureMarkets(
   conditionIds: `0x${string}`[],
-): Promise<{ markets: MarketApy[]; notFound: `0x${string}`[] }> {
+): Promise<{ markets: MarketApy[]; notFound: `0x${string}`[]; unsupported: UnsupportedIds }> {
   const markets: MarketApy[] = [];
   const notFound: `0x${string}`[] = [];
+  const unsupported: UnsupportedIds = [];
   for (const ids of chunk([...new Set(conditionIds)], MAX_BATCH)) {
     const page = await getJson<{
       markets: MarketApy[];
       notFound: `0x${string}`[];
+      unsupported?: UnsupportedIds; // absent on API builds that predate Polymarket Protocol V2 support
     }>(`${V1}/markets`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -122,8 +129,9 @@ export async function ensureMarkets(
     });
     markets.push(...page.markets);
     notFound.push(...page.notFound);
+    unsupported.push(...(page.unsupported ?? []));
   }
-  return { markets, notFound };
+  return { markets, notFound, unsupported };
 }
 
 // ============ Personalized quote for a potential deposit ============
@@ -153,14 +161,15 @@ export async function quoteStake(params: {
  * any length. They map to the parallel conditionIds/yesAmounts/noAmounts query arrays (amounts
  * default to 0). Each `quotes` entry is an INDEPENDENT quote (its points coverage assumes only that
  * market is the new stake), so chunking doesn't change any per-market result; unknown ids come back
- * in `notFound`.
+ * in `notFound`, Polymarket Protocol V2 markets in `unsupported`.
  */
 export async function quoteStakeBatch(params: {
   wallet: Address;
   deposits: QuoteDeposit[];
-}): Promise<{ wallet: Address; quotes: Quote[]; notFound: `0x${string}`[] }> {
+}): Promise<{ wallet: Address; quotes: Quote[]; notFound: `0x${string}`[]; unsupported: UnsupportedIds }> {
   const quotes: Quote[] = [];
   const notFound: `0x${string}`[] = [];
+  const unsupported: UnsupportedIds = [];
   for (const deposits of chunk(params.deposits, MAX_BATCH)) {
     const q = new URLSearchParams({
       wallet: params.wallet,
@@ -172,11 +181,13 @@ export async function quoteStakeBatch(params: {
       wallet: Address;
       quotes: Quote[];
       notFound: `0x${string}`[];
+      unsupported?: UnsupportedIds; // absent on API builds that predate Polymarket Protocol V2 support
     }>(`${V1}/quote?${q.toString()}`);
     quotes.push(...page.quotes);
     notFound.push(...page.notFound);
+    unsupported.push(...(page.unsupported ?? []));
   }
-  return { wallet: params.wallet, quotes, notFound };
+  return { wallet: params.wallet, quotes, notFound, unsupported };
 }
 
 // ============ Deposit capacity (GET /api/v1/capacity) ============

@@ -108,30 +108,51 @@ Withdraw is a single `batchWithdraw` for both wallet kinds; only the transport d
 
 ## 4. Listing the user's Polymarket positions
 
-Use Polymarket's public data API. The `user` parameter is the user's **wallet address** (DepositWallet or Safe proxy — see section 3), not the EOA.
+Use Polymarket's public **Data API v2**. The `user` parameter is the user's **wallet address** (DepositWallet or Safe proxy — see section 3), not the EOA.
 
 ```
-GET https://data-api.polymarket.com/positions?user={proxyAddress}&sizeThreshold=0.1
+GET https://data-api.polymarket.com/v2/positions?user={proxyAddress}&filter_type=TOKENS&filter_amount=0.1&limit=100
 ```
-
-Each item returned looks roughly like:
 
 ```jsonc
 {
-    "conditionId": "0x...32-byte hex...",
-    "asset": "12345...",          // ERC-1155 position id (the YES or NO id depending on `outcome`)
-    "outcome": "Yes",             // "Yes" | "No"
-    "size": 42.5,                 // human-readable token amount (6 decimals on-chain)
-    "title": "Will X happen by Y?",
-    "endDate": "2026-12-31T...",
-    ...
+  "data": [
+    {
+      "condition_id": "0x...32-byte hex...",
+      "token_id": "12345...",          // ERC-1155 position id of the held outcome (uint256 decimal string)
+      "opposite_token_id": "67890...", // ERC-1155 position id of the market's other outcome
+      "outcome": "Yes",                // outcome LABEL — free text, don't branch on it
+      "outcome_index": 0,              // 0 = YES, 1 = NO (on-chain outcome slot)
+      "current_size": 42.5,            // human-readable token amount (6 decimals on-chain)
+      "title": "Will X happen by Y?",
+      "end_date": "2026-12-31",
+      ...
+    }
+  ],
+  "pagination": { "limit": 100, "has_more": false, "next_cursor": null }
 }
 ```
 
-Group positions by `conditionId`. For each `conditionId` you'll typically have a YES item and a
-NO item (the user might only hold one side).
+Group positions by `condition_id`. For each `condition_id` you'll typically have a YES item and a
+NO item (the user might only hold one side); `opposite_token_id` gives you the unheld side's id
+without an on-chain lookup.
 
 The on-chain amounts you need for `batchDeposit` are **6-decimal bigints**.
+
+**Polymarket Protocol V2 positions.** Since Polymarket's Protocol V2 switch (new markets from
+Nov 2, 2026) a wallet can also hold positions on the new `PositionManager` ledger. The vault only
+takes Conditional Tokens (v1) positions, and a position row carries no marker for this — resolve it
+with the token lookup (max 50 ids per call):
+
+```
+GET https://data-api.polymarket.com/v2/tokens?token_id=12345...,67890...
+```
+
+Each row's `module` is `v1_ctf` for a Conditional Tokens market; every other value (`binary`,
+`neg_risk`, `combo`) is a Protocol V2 module. **List those positions as "not supported", never pass
+them to `batchDeposit` or the push flow** — the vault would revert. The example stores this as
+`protocolVersion` on every position (`"v1"`, `"v2"`, or `null` when the lookup does not know the
+token, which is treated as not stakeable) and the deposit/quote scripts skip them.
 
 ---
 
@@ -148,8 +169,9 @@ Convert into a `bigint` using the same 6-decimal scale.
 
 > **CORS / calling from the browser.** The Gamma API is a third-party Polymarket service and does
 > not guarantee CORS headers for your origin (the same applies to the questionId lookup in section 8,
-> which also hits Gamma, and to the data API in section 4). If a direct browser request is blocked,
-> proxy these calls through your own backend. This example runs server-side, so it isn't affected.
+> which also hits Gamma). If a direct browser request is blocked, proxy these calls through your own
+> backend. The Data API v2 in section 4 sends `Access-Control-Allow-Origin: *`, so it can be called
+> from the browser directly. This example runs server-side, so it isn't affected either way.
 
 ---
 
@@ -367,8 +389,8 @@ way it does, or you'll hit `PushDepositMismatch`:
   `noAmount > 0`, push the NO positionId then noAmount.
 - Skip zero sides entirely (they must NOT appear in `ids`/`values`).
 
-The YES/NO position ids are the on-chain ERC-1155 token ids. Polymarket's `/positions` data API
-returns this directly as the `asset` field (uint256 as decimal string).
+The YES/NO position ids are the on-chain ERC-1155 token ids. Polymarket's `/v2/positions` data API
+returns them directly as `token_id` / `opposite_token_id` (uint256 as decimal string).
 
 **Wire encoding helper (viem)**
 
@@ -502,14 +524,17 @@ in Robin's set.
 ```
 
 `**GET /markets?conditionIds=a,b,c**` (batch) — up to 25 unique markets in one call:
-`{ "markets": [ /* one MarketApy per found market */ ], "notFound": ["0x…"] }`.
+`{ "markets": [ /* one MarketApy per found market */ ], "notFound": ["0x…"], "unsupported": ["0x…"] }`.
+`unsupported` lists indexed markets that run on Polymarket Protocol V2 and cannot be staked on this
+vault; the single-market reads answer `422` with code `unsupported_market` for those.
 
 `**POST /markets**` — the **only mutating** endpoint (every read is read-only). Indexes markets so the
 reads can return them: body `{ "conditionIds": ["0x…", …] }` (≤ 25); fetches ids Robin doesn't know
 yet from Polymarket and upserts them. Returns the **same shape as `GET /markets`**
-(`{ markets, notFound }`), so the headlines come back directly — no follow-up read. A `404` / `notFound`
-from a read just means "not indexed yet". The example's `ensureMarkets` calls this and uses the
-returned `markets` directly.
+(`{ markets, notFound, unsupported }`), so the headlines come back directly — no follow-up read. A `404` /
+`notFound` from a read just means "not indexed yet"; a `422` / `unsupported` means the market is a
+Polymarket Protocol V2 market. The example's `ensureMarkets` calls this and uses the returned
+`markets` directly, and keeps `unsupported` markets out of every deposit.
 
 `**GET /markets/{conditionId}/quote?wallet=0x…&yesAmount=…&noAmount=…**` — personalized projected APY
 for a potential deposit. Amounts are 6-dec micro-units, both sides at once (mirroring the deposit
@@ -538,7 +563,7 @@ contract); omit them for a headline projection.
 
 `**GET /quote?wallet=0x…&conditionIds=a,b&yesAmounts=…&noAmounts=…**` (batch) — up to 25 unique
 markets in one call; `yesAmounts`/`noAmounts` align 1:1 with `conditionIds` (omit for all-zero).
-Returns `{ "wallet": "0x…", "quotes": [ /* one Quote per found market */ ], "notFound": ["0x…"] }`.
+Returns `{ "wallet": "0x…", "quotes": [ /* one Quote per found market */ ], "notFound": ["0x…"], "unsupported": ["0x…"] }`.
 Each quote is **independent** (its points coverage assumes only that market is the new stake).
 
 `**GET /markets/{conditionId}/position?wallet=0x…` — a wallet's existing position in one market

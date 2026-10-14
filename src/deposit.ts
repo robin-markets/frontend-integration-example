@@ -64,10 +64,16 @@ async function main() {
 
   const allConditionIds = positions.map((p) => p.conditionId);
   let marketById = new Map<`0x${string}`, MarketApy>();
+  // Polymarket Protocol V2 markets are listed but can never be deposited: the vault only takes
+  // Conditional Tokens (v1) positions. Known from the token lookup, and from Robin's `unsupported`.
+  const unsupportedIds = new Set<`0x${string}`>(
+    positions.filter((p) => p.protocolVersion !== "v1").map((p) => p.conditionId),
+  );
   try {
     console.log("\nLoading market APYs…");
-    const { markets } = await ensureMarkets(allConditionIds);
+    const { markets, unsupported } = await ensureMarkets(allConditionIds);
     marketById = new Map(markets.map((m) => [m.conditionId, m]));
+    for (const id of unsupported) unsupportedIds.add(id);
   } catch (e) {
     console.log(`(APY data unavailable — ${(e as Error).message})`);
   }
@@ -79,12 +85,14 @@ async function main() {
       if (p.yesSize > 0) parts.push(`${p.yesSize.toFixed(4)} YES`);
       if (p.noSize > 0) parts.push(`${p.noSize.toFixed(4)} NO`);
       const m = marketById.get(p.conditionId);
-      const range = !m
-        ? "not on Robin"
-        : m.resolved
-          ? "resolved"
-          : `APY ${fmtPct(m.apy.min)}–${fmtPct(m.apy.max)}`;
-      return `${range.padEnd(20)}  ${parts.join(" + ").padEnd(24)}  ${p.title}`;
+      const range = unsupportedIds.has(p.conditionId)
+        ? "Polymarket V2 — not supported"
+        : !m
+          ? "not on Robin"
+          : m.resolved
+            ? "resolved"
+            : `APY ${fmtPct(m.apy.min)}–${fmtPct(m.apy.max)}`;
+      return `${range.padEnd(30)}  ${parts.join(" + ").padEnd(24)}  ${p.title}`;
     },
     'Pick markets to deposit (e.g. "1,3,5" or "all"): ',
   );
@@ -94,6 +102,12 @@ async function main() {
   console.log();
   const rows: DepositRow[] = [];
   for (const p of picked) {
+    if (unsupportedIds.has(p.conditionId)) {
+      console.log(
+        `Skipping "${p.title}": it runs on Polymarket Protocol V2, which the vault cannot deposit.`,
+      );
+      continue;
+    }
     let yes = 0n;
     let no = 0n;
     if (p.yesSize > 0) {
