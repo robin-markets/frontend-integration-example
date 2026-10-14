@@ -69,14 +69,23 @@ address everywhere (positions, balances, shares, `yieldRecipient`, …). **A dep
 takes priority over a Safe.** See `[wallet.ts](./src/wallet.ts)` for a concise `resolveWallet()`:
 
 ```ts
-import { RelayClient } from "@polymarket/builder-relayer-client";
-const relayClient = new RelayClient(POLYMARKET_RELAYER_URL, 137, walletClient);
+import { createSecureClient, WalletType } from "@polymarket/client";
+import { privateKey } from "@polymarket/client/viem";
 
-// 1. DepositWallet — the address is derived locally (CREATE2) from the EOA; deployment is a
-//    read-only relayer call. Neither needs builder-signing credentials.
-const depositWallet = await relayClient.deriveDepositWalletAddress();
-if (await relayClient.getDeployed(depositWallet, "WALLET")) {
-  // → { kind: "deposit-wallet", address: depositWallet }
+// Creating the client authenticates against the CLOB once (one signature, no gas).
+//
+// 1. DepositWallet — without a `wallet` option the SDK resolves the EOA's DepositWallet itself
+//    (UUPS address first, then beacon) and deploys one if neither exists. Detect with a client that
+//    has no API key: deployment then fails before anything is submitted, and that failure means
+//    "no DepositWallet". Create the client with the Builder API key only once the wallet is known.
+try {
+  const client = await createSecureClient({ signer: privateKey(EOA_PRIVATE_KEY) });
+  if (client.account.walletType === WalletType.DEPOSIT_WALLET) {
+    // → { kind: "deposit-wallet", address: client.account.wallet }
+  }
+} catch (e) {
+  if (!(e.name === "InvariantError" && e.message.includes("Deposit Wallet deployment requires"))) throw e;
+  // no DepositWallet → fall through to the Safe check
 }
 
 // 2. else the legacy Safe proxy — computed from the EOA, deployment checked via getCode.
@@ -100,7 +109,7 @@ if (code && code !== "0x") {
 | Wallet        | Deposit flow                                       | Transport                                                                                             |
 | ------------- | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
 | Safe proxy    | pull (`approve` → `batchDeposit` → revoke) or push | `Safe.execTransaction` — see `[deposit.ts](./src/deposit.ts)` / `[withdraw.ts](./src/withdraw.ts)`    |
-| DepositWallet | **push only** — the relayer blocks `approve`       | Polymarket relayer `executeDepositWalletBatch` — see §10 + `[deposit-push.ts](./src/deposit-push.ts)` |
+| DepositWallet | **push only** — the relayer blocks `approve`       | Polymarket relayer gasless batch via `@polymarket/client` — see §10 + `[deposit-push.ts](./src/deposit-push.ts)` |
 
 Withdraw is a single `batchWithdraw` for both wallet kinds; only the transport differs.
 
@@ -251,7 +260,7 @@ await publicClient.waitForTransactionReceipt({ hash: result.hash });
 
 Under the hood `protocol-kit` deploys/uses the MultiSend contract and wraps everything in a single `execTransaction(...)` call against the proxy.
 
-This is the **Safe** transport. A **DepositWallet** submits the same calls (`{ to, value, data }`) through the Polymarket relayer's `executeDepositWalletBatch(calls, walletAddress, deadline)` instead — no `Safe.init`. The example hides this behind `executeViaWallet(wallet, calls)` in `[wallet.ts](./src/wallet.ts)`: build the batch once, then dispatch it for whichever wallet `resolveWallet()` returned. `deposit-push.ts` and `withdraw.ts` run for **both** wallet kinds; `deposit.ts` (the pull path) is Safe-only.
+This is the **Safe** transport. A **DepositWallet** submits the same calls (`{ to, value, data }`) as one gasless batch through the Polymarket relayer instead — no `Safe.init`. The SDK's named methods only cover Polymarket's own actions, so the example uses `prepareGaslessTransaction(client, { calls, metadata })` from `@polymarket/client/actions`: it returns a workflow that asks the signer for its address and for the EIP-712 batch signature, submits the batch and returns a transaction handle to `.wait()` on. Builder credentials (`POLY_BUILDER_*` in `.env`) authorize the relayer to sponsor it. The example hides this behind `executeViaWallet(wallet, calls)` in `[wallet.ts](./src/wallet.ts)`: build the batch once, then dispatch it for whichever wallet `resolveWallet()` returned. `deposit-push.ts` and `withdraw.ts` run for **both** wallet kinds; `deposit.ts` (the pull path) is Safe-only.
 
 ---
 
