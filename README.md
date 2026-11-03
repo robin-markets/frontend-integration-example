@@ -501,6 +501,12 @@ total = max(nativeApy × matchedFraction, guaranteeFloor)   // socialized base, 
 - **Points** — a personalized boost from the wallet's Robin Points balance. You never handle points
   directly: they appear as the `points` line inside the quote/position APY and are folded into the total.
 
+> **Programmes ended.** The guarantee, matching and points programmes ended on 3 November 2026 at
+> 20:00 UTC. The shapes below are unchanged, but `guaranteeFloor`, `matching`, `maxPointsBoost` and
+> the `points` lines are now `0`, and every market / quote / position object carries a `programmes`
+> block (`{ guarantee, matching, points }`, each `{ active, stoppedAt }`). Yield accrued before the
+> end still shows in a position's `yield` breakdown and is paid at withdrawal.
+
 ### Endpoints
 
 `**GET /markets/{conditionId}` — address-agnostic staking headline. Returns `404` for a market not
@@ -529,6 +535,7 @@ in Robin's set.
     "nativeApy": 5.1, // netAPY, null if temporarily unavailable
   },
   "vault": "0x…",
+  "programmes": { "guarantee": { "active": false, "stoppedAt": 1793736000 }, "matching": { "…": "…" }, "points": { "…": "…" } },
 }
 ```
 

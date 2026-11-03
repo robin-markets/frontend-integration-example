@@ -62,6 +62,11 @@ export type WithdrawRow = {
 type Side = "yes" | "no";
 type Outcome = Side | "both";
 
+/** Wind-down state of one Robin bonus programme; `stoppedAt` is unix seconds, null while running. */
+export type ProgrammeState = { active: boolean; stoppedAt: number | null };
+/** The guarantee, matching and points programmes all ended on 3 November 2026 — their APY lines are 0 since. */
+export type ProgrammeStatus = { guarantee: ProgrammeState; matching: ProgrammeState; points: ProgrammeState };
+
 // Address-agnostic market headline — the live staking APY any staker could earn right now.
 export type MarketApy = {
   conditionId: `0x${string}`;
@@ -91,6 +96,7 @@ export type MarketApy = {
     nativeApy: number | null; // netAPY, null if temporarily unavailable
   };
   vault: `0x${string}`;
+  programmes: ProgrammeStatus;
 };
 
 /** A single market's personalized quote — also the per-entry shape of the batch quote (`quotes[]`). */
@@ -105,6 +111,7 @@ export type Quote = {
     points: number; // this wallet's points boost over (existing stake + this deposit)
   };
   points: { balance: string; boostDays: number; portfolioStakeUsd: string };
+  programmes: ProgrammeStatus;
 };
 
 /** Single-market quote response — a Quote plus the echoed wallet. */
@@ -152,6 +159,7 @@ export type RobinPosition = {
   value: string; // current USD value (6-dec)
   yield: RobinYield; // accrued, not-yet-claimed yield (6-dec USD), split by source
   positionApy: number; // live APY on this position (base + locked matching + points boost)
+  programmes: ProgrammeStatus;
 };
 
 export type SinglePosition = Partial<RobinPosition> & {
